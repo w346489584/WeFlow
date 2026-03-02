@@ -1,12 +1,14 @@
 .export-board-page {
-  height: calc(100% + 48px);
+  min-height: calc(100% + 48px);
+  height: auto;
   margin: -24px;
   padding: 20px;
   background: var(--bg-primary);
   display: flex;
   flex-direction: column;
   gap: 16px;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: visible;
 
   .spin {
     animation: exportSpin 1s linear infinite;
@@ -443,8 +445,8 @@
   border-radius: 12px;
   background: var(--card-bg);
   padding: 12px;
-  flex: 1;
-  min-height: 0;
+  flex: 1 0 420px;
+  min-height: 420px;
   display: flex;
   flex-direction: column;
   gap: 10px;
