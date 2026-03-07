@@ -15,6 +15,7 @@ import { SessionStatsCacheService, SessionStatsCacheEntry, SessionStatsCacheStat
 import { GroupMyMessageCountCacheService, GroupMyMessageCountCacheEntry } from './groupMyMessageCountCacheService'
 import { exportCardDiagnosticsService } from './exportCardDiagnosticsService'
 import { voiceTranscribeService } from './voiceTranscribeService'
+import { ImageDecryptService } from './imageDecryptService'
 import { LRUCache } from '../utils/LRUCache.js'
 
 export interface ChatSession {
@@ -210,6 +211,7 @@ class ChatService {
   private readonly messageCacheService: MessageCacheService
   private readonly sessionStatsCacheService: SessionStatsCacheService
   private readonly groupMyMessageCountCacheService: GroupMyMessageCountCacheService
+  private readonly imageDecryptService: ImageDecryptService
   private voiceWavCache: LRUCache<string, Buffer>
   private voiceTranscriptCache: LRUCache<string, string>
   private voiceTranscriptPending = new Map<string, Promise<{ success: boolean; transcript?: string; error?: string }>>()
@@ -268,6 +270,7 @@ class ChatService {
     this.messageCacheService = new MessageCacheService(this.configService.getCacheBasePath())
     this.sessionStatsCacheService = new SessionStatsCacheService(this.configService.getCacheBasePath())
     this.groupMyMessageCountCacheService = new GroupMyMessageCountCacheService(this.configService.getCacheBasePath())
+    this.imageDecryptService = new ImageDecryptService()
     // 初始化LRU缓存，限制大小防止内存泄漏
     this.voiceWavCache = new LRUCache(this.voiceWavCacheMaxEntries)
     this.voiceTranscriptCache = new LRUCache(1000) // 最多缓存1000条转写记录
@@ -5487,59 +5490,33 @@ class ChatService {
       const localId = parseInt(msgId, 10)
       if (!this.connected) await this.connect()
 
-      // 1. 获取消息详情以拿到 MD5 和 AES Key
+      // 1. 获取消息详情
       const msgResult = await this.getMessageByLocalId(sessionId, localId)
       if (!msgResult.success || !msgResult.message) {
         return { success: false, error: '未找到消息' }
       }
       const msg = msgResult.message
 
-      // 2. 确定搜索的基础名
-      const baseName = msg.imageMd5 || msg.imageDatName || String(msg.localId)
+      // 2. 使用 imageDecryptService 解密图片
+      const result = await this.imageDecryptService.decryptImage({
+        sessionId,
+        imageMd5: msg.imageMd5,
+        imageDatName: msg.imageDatName || String(msg.localId),
+        force: false
+      })
 
-      // 3. 查找 .dat 文件
-      const myWxid = this.configService.get('myWxid')
-      const dbPath = this.configService.get('dbPath')
-      if (!myWxid || !dbPath) return { success: false, error: '配置缺失' }
-
-      const accountDir = dirname(dirname(dbPath)) // dbPath 是 db_storage 里面的路径或同级
-      // 实际上 dbPath 指向 db_storage，accountDir 应该是其父目录
-      const actualAccountDir = this.resolveAccountDir(dbPath, myWxid)
-      if (!actualAccountDir) return { success: false, error: '无法定位账号目录' }
-
-      const datPath = await this.findDatFile(actualAccountDir, baseName, sessionId)
-      if (!datPath) return { success: false, error: '未找到图片源文件 (.dat)' }
-
-      // 4. 获取解密密钥（优先使用当前 wxid 对应的密钥）
-      const imageKeys = this.configService.getImageKeysForCurrentWxid()
-      const xorKeyRaw = imageKeys.xorKey
-      const aesKeyRaw = imageKeys.aesKey || msg.aesKey
-
-      if (!xorKeyRaw) return { success: false, error: '未配置图片 XOR 密钥，请在设置中自动获取' }
-
-      const xorKey = this.parseXorKey(xorKeyRaw)
-      const data = readFileSync(datPath)
-
-      // 5. 解密
-      let decrypted: Buffer
-      const version = this.getDatVersion(data)
-
-      if (version === 0) {
-        decrypted = this.decryptDatV3(data, xorKey)
-      } else if (version === 1) {
-        const aesKey = this.asciiKey16(this.defaultV1AesKey)
-        decrypted = this.decryptDatV4(data, xorKey, aesKey)
-      } else {
-        const trimmed = String(aesKeyRaw ?? '').trim()
-        if (!trimmed || trimmed.length < 16) {
-          return { success: false, error: 'V4版本需要16字节AES密钥' }
-        }
-        const aesKey = this.asciiKey16(trimmed)
-        decrypted = this.decryptDatV4(data, xorKey, aesKey)
+      if (!result.success || !result.localPath) {
+        return { success: false, error: result.error || '图片解密失败' }
       }
 
-      // 返回 base64
-      return { success: true, data: decrypted.toString('base64') }
+      // 3. 读取解密后的文件并转成 base64
+      // localPath 是 file:// URL，需要转换成文件路径
+      const filePath = result.localPath.startsWith('file://')
+        ? result.localPath.replace(/^file:\/\//, '')
+        : result.localPath
+
+      const imageData = readFileSync(filePath)
+      return { success: true, data: imageData.toString('base64') }
     } catch (e) {
       console.error('ChatService: getImageData 失败:', e)
       return { success: false, error: String(e) }
