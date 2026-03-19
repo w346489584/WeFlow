@@ -40,6 +40,7 @@ export interface Message {
   messageKey: string
   localId: number
   serverId: number
+  serverIdRaw?: string
   localType: number
   createTime: number
   sortSeq: number
@@ -1807,6 +1808,69 @@ class ChatService {
     return Number.isFinite(parsed) ? parsed : fallback
   }
 
+  private normalizeUnsignedIntegerToken(raw: any): string | undefined {
+    if (raw === undefined || raw === null || raw === '') return undefined
+
+    if (typeof raw === 'bigint') {
+      return raw >= 0n ? raw.toString() : '0'
+    }
+
+    if (typeof raw === 'number') {
+      if (!Number.isFinite(raw)) return undefined
+      return String(Math.max(0, Math.floor(raw)))
+    }
+
+    if (Buffer.isBuffer(raw)) {
+      return this.normalizeUnsignedIntegerToken(raw.toString('utf-8').trim())
+    }
+    if (raw instanceof Uint8Array) {
+      return this.normalizeUnsignedIntegerToken(Buffer.from(raw).toString('utf-8').trim())
+    }
+    if (Array.isArray(raw)) {
+      return this.normalizeUnsignedIntegerToken(Buffer.from(raw).toString('utf-8').trim())
+    }
+
+    if (typeof raw === 'object') {
+      if ('value' in raw) return this.normalizeUnsignedIntegerToken(raw.value)
+      if ('intValue' in raw) return this.normalizeUnsignedIntegerToken(raw.intValue)
+      if ('low' in raw && 'high' in raw) {
+        try {
+          const low = BigInt(raw.low >>> 0)
+          const high = BigInt(raw.high >>> 0)
+          const value = (high << 32n) + low
+          return value >= 0n ? value.toString() : '0'
+        } catch {
+          return undefined
+        }
+      }
+      const text = raw.toString ? String(raw).trim() : ''
+      if (text && text !== '[object Object]') {
+        return this.normalizeUnsignedIntegerToken(text)
+      }
+      return undefined
+    }
+
+    const text = String(raw).trim()
+    if (!text) return undefined
+    if (/^\d+$/.test(text)) {
+      return text.replace(/^0+(?=\d)/, '') || '0'
+    }
+    if (/^[+-]?\d+$/.test(text)) {
+      try {
+        const value = BigInt(text)
+        return value >= 0n ? value.toString() : '0'
+      } catch {
+        return undefined
+      }
+    }
+
+    const parsed = Number(text)
+    if (Number.isFinite(parsed)) {
+      return String(Math.max(0, Math.floor(parsed)))
+    }
+    return undefined
+  }
+
   private coerceRowNumber(raw: any): number {
     if (raw === undefined || raw === null) return NaN
     if (typeof raw === 'number') return raw
@@ -3158,6 +3222,7 @@ class ChatService {
       }
 
       const localId = this.getRowInt(row, ['local_id', 'localId', 'LocalId', 'msg_local_id', 'msgLocalId', 'MsgLocalId', 'msg_id', 'msgId', 'MsgId', 'id', 'WCDB_CT_local_id'], 0)
+      const serverIdRaw = this.normalizeUnsignedIntegerToken(this.getRowField(row, ['server_id', 'serverId', 'ServerId', 'msg_server_id', 'msgServerId', 'MsgServerId', 'WCDB_CT_server_id']))
       const serverId = this.getRowInt(row, ['server_id', 'serverId', 'ServerId', 'msg_server_id', 'msgServerId', 'MsgServerId', 'WCDB_CT_server_id'], 0)
       const sortSeq = this.getRowInt(row, ['sort_seq', 'sortSeq', 'seq', 'sequence', 'WCDB_CT_sort_seq'], createTime)
 
@@ -3173,6 +3238,7 @@ class ChatService {
         }),
         localId,
         serverId,
+        serverIdRaw,
         localType,
         createTime,
         sortSeq,
@@ -5554,31 +5620,114 @@ class ChatService {
    */
   async getVoiceData(sessionId: string, msgId: string, createTime?: number, serverId?: string | number, senderWxidOpt?: string): Promise<{ success: boolean; data?: string; error?: string }> {
     const startTime = Date.now()
+    const verboseVoiceTrace = process.env.WEFLOW_VOICE_TRACE === '1'
+    const msgCreateTimeLabel = (value?: number): string => {
+      return Number.isFinite(Number(value)) ? String(Math.floor(Number(value))) : '无'
+    }
+    const lookupPath: string[] = []
+    const logLookupPath = (status: 'success' | 'fail', error?: string): void => {
+      const timeline = lookupPath.map((step, idx) => `${idx + 1}.${step}`).join(' -> ')
+      if (status === 'success') {
+        if (verboseVoiceTrace) {
+          console.info(`[Voice] 定位流程成功: ${timeline}`)
+        }
+      } else {
+        console.warn(`[Voice] 定位流程失败${error ? `(${error})` : ''}: ${timeline}`)
+      }
+    }
+
     try {
+      lookupPath.push(`会话=${sessionId}, 消息=${msgId}, 传入createTime=${msgCreateTimeLabel(createTime)}, serverId=${String(serverId || 0)}`)
+      lookupPath.push(`消息来源提示=${senderWxidOpt || '无'}`)
+
       const localId = parseInt(msgId, 10)
       if (isNaN(localId)) {
+        logLookupPath('fail', '无效的消息ID')
         return { success: false, error: '无效的消息ID' }
       }
 
       let msgCreateTime = createTime
       let senderWxid: string | null = senderWxidOpt || null
+      let resolvedServerId: string | number = this.normalizeUnsignedIntegerToken(serverId) || 0
+      let locatedMsg: Message | null = null
+      let rejectedNonVoiceLookup = false
 
-      // 如果前端没传 createTime，才需要查询消息（这个很慢）
-      if (!msgCreateTime) {
+      lookupPath.push(`初始解析localId=${localId}成功`)
+
+      // 已提供强键(createTime + serverId)时，直接走语音定位，避免 localId 反查噪音与误导
+      const hasStrongInput = Number.isFinite(Number(msgCreateTime)) && Number(msgCreateTime) > 0
+        && Boolean(this.normalizeUnsignedIntegerToken(serverId))
+
+      if (hasStrongInput) {
+        lookupPath.push('调用入参已具备强键(createTime+serverId)，跳过localId反查')
+      } else {
         const t1 = Date.now()
         const msgResult = await this.getMessageByLocalId(sessionId, localId)
         const t2 = Date.now()
+        lookupPath.push(`消息反查耗时=${t2 - t1}ms`)
+        if (!msgResult.success || !msgResult.message) {
+          lookupPath.push('未命中: getMessageByLocalId')
+        } else {
+          const dbMsg = msgResult.message as Message
+          const locatedServerId = this.normalizeUnsignedIntegerToken(dbMsg.serverIdRaw ?? dbMsg.serverId)
+          const incomingServerId = this.normalizeUnsignedIntegerToken(serverId)
+          lookupPath.push(`命中消息定位: localId=${dbMsg.localId}, createTime=${dbMsg.createTime}, sender=${dbMsg.senderUsername || ''}, serverId=${locatedServerId || '0'}, localType=${dbMsg.localType}, voice时长=${dbMsg.voiceDurationSeconds ?? 0}`)
 
+          if (incomingServerId && locatedServerId && incomingServerId !== locatedServerId) {
+            lookupPath.push(`serverId纠正: input=${incomingServerId}, db=${locatedServerId}`)
+          }
 
-        if (msgResult.success && msgResult.message) {
-          const msg = msgResult.message as any
-          msgCreateTime = msg.createTime
-          senderWxid = msg.senderUsername || null
+          // localId 在不同表可能重复，反查命中非语音时不覆盖调用侧入参
+          if (Number(dbMsg.localType) === 34) {
+            locatedMsg = dbMsg
+            msgCreateTime = dbMsg.createTime || msgCreateTime
+            senderWxid = dbMsg.senderUsername || senderWxid || null
+            if (locatedServerId) {
+              resolvedServerId = locatedServerId
+            }
+          } else {
+            rejectedNonVoiceLookup = true
+            lookupPath.push('消息反查命中但localType!=34，忽略反查覆盖，继续使用调用入参定位')
+          }
         }
       }
 
       if (!msgCreateTime) {
+        lookupPath.push('定位失败: 未找到消息时间戳')
+        logLookupPath('fail', '未找到消息时间戳')
         return { success: false, error: '未找到消息时间戳' }
+      }
+      if (!locatedMsg) {
+        lookupPath.push(rejectedNonVoiceLookup
+          ? `定位结果: 反查命中非语音并已忽略, createTime=${msgCreateTime}, sender=${senderWxid || '无'}`
+          : `定位结果: 未走消息反查流程, createTime=${msgCreateTime}, sender=${senderWxid || '无'}`)
+      } else {
+        lookupPath.push(`定位结果: 语音消息被确认 localId=${localId}, createTime=${msgCreateTime}, sender=${senderWxid || '无'}`)
+      }
+      lookupPath.push(`最终serverId=${String(resolvedServerId || 0)}`)
+
+      if (verboseVoiceTrace) {
+        if (locatedMsg) {
+          console.log('[Voice] 定位到的具体语音消息:', {
+            sessionId,
+            msgId,
+            localId: locatedMsg.localId,
+            createTime: locatedMsg.createTime,
+            senderUsername: locatedMsg.senderUsername,
+            serverId: locatedMsg.serverIdRaw || locatedMsg.serverId,
+            localType: locatedMsg.localType,
+            voiceDurationSeconds: locatedMsg.voiceDurationSeconds
+          })
+        } else {
+          console.log('[Voice] 定位到的语音消息:', {
+            sessionId,
+            msgId,
+            localId,
+            createTime: msgCreateTime,
+            senderUsername: senderWxid,
+            serverId: resolvedServerId
+          })
+        }
       }
 
       // 使用 sessionId + createTime + msgId 作为缓存 key，避免同秒语音串音
@@ -5587,6 +5736,8 @@ class ChatService {
       // 检查 WAV 内存缓存
       const wavCache = this.voiceWavCache.get(cacheKey)
       if (wavCache) {
+        lookupPath.push('命中内存WAV缓存')
+        logLookupPath('success', '内存缓存')
         return { success: true, data: wavCache.toString('base64') }
       }
 
@@ -5597,11 +5748,15 @@ class ChatService {
         try {
           const wavData = readFileSync(wavFilePath)
           this.cacheVoiceWav(cacheKey, wavData)
+          lookupPath.push('命中磁盘WAV缓存')
+          logLookupPath('success', '磁盘缓存')
           return { success: true, data: wavData.toString('base64') }
         } catch (e) {
+          lookupPath.push('命中磁盘WAV缓存但读取失败')
           console.error('[Voice] 读取缓存文件失败:', e)
         }
       }
+      lookupPath.push('缓存未命中，进入DB定位')
 
       // 构建查找候选
       const candidates: string[] = []
@@ -5621,31 +5776,39 @@ class ChatService {
       if (myWxid && !candidates.includes(myWxid)) {
         candidates.push(myWxid)
       }
+      lookupPath.push(`定位候选链=${JSON.stringify(candidates)}`)
 
       const t3 = Date.now()
       // 从数据库读取 silk 数据
-      const silkData = await this.getVoiceDataFromMediaDb(sessionId, msgCreateTime, localId, serverId || 0, candidates)
+      const silkData = await this.getVoiceDataFromMediaDb(sessionId, msgCreateTime, localId, resolvedServerId || 0, candidates, lookupPath, myWxid)
       const t4 = Date.now()
+      lookupPath.push(`DB定位耗时=${t4 - t3}ms`)
 
 
       if (!silkData) {
+        logLookupPath('fail', '未找到语音数据')
         return { success: false, error: '未找到语音数据 (请确保已在微信中播放过该语音)' }
       }
+      lookupPath.push('语音二进制定位完成')
 
       const t5 = Date.now()
       // 使用 silk-wasm 解码
       const pcmData = await this.decodeSilkToPcm(silkData, 24000)
       const t6 = Date.now()
+      lookupPath.push(`silk解码耗时=${t6 - t5}ms`)
 
 
       if (!pcmData) {
+        logLookupPath('fail', 'Silk解码失败')
         return { success: false, error: 'Silk 解码失败' }
       }
+      lookupPath.push('silk解码成功')
 
       const t7 = Date.now()
       // PCM -> WAV
       const wavData = this.createWavBuffer(pcmData, 24000)
       const t8 = Date.now()
+      lookupPath.push(`WAV转码耗时=${t8 - t7}ms`)
 
 
       // 缓存 WAV 数据到内存
@@ -5654,9 +5817,13 @@ class ChatService {
       // 缓存 WAV 数据到文件（异步，不阻塞返回）
       this.cacheVoiceWavToFile(cacheKey, wavData)
 
+      lookupPath.push(`总耗时=${t8 - startTime}ms`)
+      logLookupPath('success')
 
       return { success: true, data: wavData.toString('base64') }
     } catch (e) {
+      lookupPath.push(`异常: ${String(e)}`)
+      logLookupPath('fail', String(e))
       console.error('ChatService: getVoiceData 失败:', e)
       return { success: false, error: String(e) }
     }
@@ -5685,38 +5852,89 @@ class ChatService {
     createTime: number,
     localId: number,
     svrId: string | number,
-    candidates: string[]
+    candidates: string[],
+    lookupPath?: string[],
+    myWxid?: string
   ): Promise<Buffer | null> {
     try {
-      const batchResult = await wcdbService.getVoiceDataBatch([{
-        session_id: sessionId,
-        create_time: Math.max(0, Math.floor(Number(createTime || 0))),
-        local_id: Math.max(0, Math.floor(Number(localId || 0))),
-        svr_id: svrId || 0,
-        candidates: Array.isArray(candidates) ? candidates : []
-      }])
-      if (batchResult.success && Array.isArray(batchResult.rows) && batchResult.rows.length > 0) {
-        const hex = String(batchResult.rows[0]?.hex || '').trim()
-        if (hex) {
-          const decoded = this.decodeVoiceBlob(hex)
-          if (decoded && decoded.length > 0) return decoded
+      const candidatesList = Array.isArray(candidates)
+        ? candidates.filter((value, index, arr) => {
+          const key = String(value || '').trim()
+          return Boolean(key) && arr.findIndex(v => String(v || '').trim() === key) === index
+        })
+        : []
+      const createTimeInt = Math.max(0, Math.floor(Number(createTime || 0)))
+      const localIdInt = Math.max(0, Math.floor(Number(localId || 0)))
+      const svrIdToken = svrId || 0
+
+      const plans: Array<{ label: string; list: string[] }> = []
+      if (candidatesList.length > 0) {
+        const strict = String(myWxid || '').trim()
+          ? candidatesList.filter(item => item !== String(myWxid || '').trim())
+          : candidatesList.slice()
+        if (strict.length > 0 && strict.length !== candidatesList.length) {
+          plans.push({ label: 'strict(no-self)', list: strict })
+        }
+        plans.push({ label: 'full', list: candidatesList })
+      } else {
+        plans.push({ label: 'empty', list: [] })
+      }
+
+      lookupPath?.push(`构建音频查询参数 createTime=${createTimeInt}, localId=${localIdInt}, svrId=${svrIdToken}, plans=${plans.map(p => `${p.label}:${p.list.length}`).join('|')}`)
+
+      for (const plan of plans) {
+        lookupPath?.push(`尝试候选集[${plan.label}]=${JSON.stringify(plan.list)}`)
+        // 先走单条 native：svr_id 通过 int64 直传，避免 batch JSON 的大整数精度/解析差异
+        lookupPath?.push(`先尝试单条查询(${plan.label})`)
+        const single = await wcdbService.getVoiceData(
+          sessionId,
+          createTimeInt,
+          plan.list,
+          localIdInt,
+          svrIdToken
+        )
+        lookupPath?.push(`单条查询(${plan.label})结果: success=${single.success}, hasHex=${Boolean(single.hex)}`)
+        if (single.success && single.hex) {
+          const decoded = this.decodeVoiceBlob(single.hex)
+          if (decoded && decoded.length > 0) {
+            lookupPath?.push(`单条查询(${plan.label})解码成功`)
+            return decoded
+          }
+          lookupPath?.push(`单条查询(${plan.label})解码为空`)
+        }
+
+        const batchResult = await wcdbService.getVoiceDataBatch([{
+          session_id: sessionId,
+          create_time: createTimeInt,
+          local_id: localIdInt,
+          svr_id: svrIdToken,
+          candidates: plan.list
+        }])
+        lookupPath?.push(`批量查询(${plan.label})结果: success=${batchResult.success}, rows=${Array.isArray(batchResult.rows) ? batchResult.rows.length : 0}`)
+        if (!batchResult.success) {
+          lookupPath?.push(`批量查询(${plan.label})失败: ${batchResult.error || '无错误信息'}`)
+        }
+
+        if (batchResult.success && Array.isArray(batchResult.rows) && batchResult.rows.length > 0) {
+          const hex = String(batchResult.rows[0]?.hex || '').trim()
+          lookupPath?.push(`命中批量结果(${plan.label})[0], hexLen=${hex.length}`)
+          if (hex) {
+            const decoded = this.decodeVoiceBlob(hex)
+            if (decoded && decoded.length > 0) {
+              lookupPath?.push(`批量结果(${plan.label})解码成功`)
+              return decoded
+            }
+            lookupPath?.push(`批量结果(${plan.label})解码为空`)
+          }
+        } else {
+          lookupPath?.push(`批量结果(${plan.label})未命中`)
         }
       }
 
-      // fallback-native: 受控回退到旧单条 native 查询
-      const single = await wcdbService.getVoiceData(
-        sessionId,
-        Math.max(0, Math.floor(Number(createTime || 0))),
-        Array.isArray(candidates) ? candidates : [],
-        Math.max(0, Math.floor(Number(localId || 0))),
-        svrId || 0
-      )
-      if (single.success && single.hex) {
-        const decoded = this.decodeVoiceBlob(single.hex)
-        if (decoded && decoded.length > 0) return decoded
-      }
+      lookupPath?.push('音频定位失败：未命中任何结果')
       return null
     } catch (e) {
+      lookupPath?.push(`音频定位异常: ${String(e)}`)
       return null
     }
   }
@@ -5870,7 +6088,7 @@ class ChatService {
       if (!msgResult.success || !msgResult.message) return { success: false, error: '未找到该消息' }
       const msg = msgResult.message
       const senderWxid = msg.senderUsername || undefined
-      return this.getVoiceData(sessionId, msgId, msg.createTime, msg.serverId, senderWxid)
+      return this.getVoiceData(sessionId, msgId, msg.createTime, msg.serverIdRaw || msg.serverId, senderWxid)
     } catch (e) {
       console.error('ChatService: getVoiceData 失败:', e)
       return { success: false, error: String(e) }
@@ -5960,7 +6178,7 @@ class ChatService {
 
         if (msgResult.success && msgResult.message) {
           msgCreateTime = msgResult.message.createTime
-          serverId = msgResult.message.serverId
+          serverId = msgResult.message.serverIdRaw || msgResult.message.serverId
 
         }
       }
@@ -6326,6 +6544,11 @@ class ChatService {
 
       for (const row of result.messages) {
         let message = await this.parseMessage(row, { source: 'search', sessionId })
+        const resolvedSessionId = String(
+          sessionId ||
+          this.getRowField(row, ['_session_id', 'session_id', 'sessionId', 'talker', 'username'])
+          || ''
+        ).trim()
         const needsDetailHydration = isGroupSearch &&
           Boolean(sessionId) &&
           message.localId > 0 &&
@@ -6344,19 +6567,9 @@ class ChatService {
           }
         }
 
-        if (isGroupSearch && (needsDetailHydration || message.isSend === 1)) {
-          console.info('[ChatService][GroupSearchHydratedHit]', {
-            sessionId,
-            localId: message.localId,
-            senderUsername: message.senderUsername,
-            isSend: message.isSend,
-            senderDisplayName: message.senderDisplayName,
-            senderAvatarUrl: message.senderAvatarUrl,
-            usedDetailHydration: needsDetailHydration,
-            parsedContent: message.parsedContent
-          })
+        if (resolvedSessionId) {
+          ;(message as Message & { sessionId?: string }).sessionId = resolvedSessionId
         }
-
         messages.push(message)
       }
 
@@ -6390,6 +6603,7 @@ class ChatService {
     // 这里复用 parseMessagesBatch 里面的解析逻辑，为了简单我这里先写个基础的
     // 实际项目中建议抽取 parseRawMessage(row) 供多处使用
     const localId = this.getRowInt(row, ['local_id', 'localId', 'LocalId', 'msg_local_id', 'msgLocalId', 'MsgLocalId', 'msg_id', 'msgId', 'MsgId', 'id', 'WCDB_CT_local_id'], 0)
+    const serverIdRaw = this.normalizeUnsignedIntegerToken(this.getRowField(row, ['server_id', 'serverId', 'ServerId', 'msg_server_id', 'msgServerId', 'MsgServerId', 'WCDB_CT_server_id']))
     const serverId = this.getRowInt(row, ['server_id', 'serverId', 'ServerId', 'msg_server_id', 'msgServerId', 'MsgServerId', 'WCDB_CT_server_id'], 0)
     const localType = this.getRowInt(row, ['local_type', 'localType', 'type', 'msg_type', 'msgType', 'WCDB_CT_local_type'], 0)
     const createTime = this.getRowInt(row, ['create_time', 'createTime', 'createtime', 'msg_create_time', 'msgCreateTime', 'msg_time', 'msgTime', 'time', 'WCDB_CT_create_time'], 0)
@@ -6409,6 +6623,7 @@ class ChatService {
       }),
       localId,
       serverId,
+      serverIdRaw,
       localType,
       createTime,
       sortSeq,
@@ -6430,19 +6645,6 @@ class ChatService {
         val_create_time: row['create_time'],
         rawCreateTime,
         rawCreateTimeType: rawCreateTime ? typeof rawCreateTime : 'null'
-      })
-    }
-
-    if (options?.source === 'search' && String(options.sessionId || '').endsWith('@chatroom') && sendState.selfMatched) {
-      console.info('[ChatService][GroupSearchSelfHit]', {
-        sessionId: options.sessionId,
-        localId,
-        createTime,
-        senderUsername,
-        rawIsSend,
-        resolvedIsSend: sendState.isSend,
-        correctedBySelfIdentity: sendState.correctedBySelfIdentity,
-        rowKeys: Object.keys(row)
       })
     }
 

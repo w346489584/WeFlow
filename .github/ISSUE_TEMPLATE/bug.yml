@@ -20,6 +20,17 @@ body:
         - label: 我已阅读过相关文档
           required: true
   - type: dropdown
+    id: platform
+    attributes:
+      label: 使用平台
+      description: 选择出现问题的平台
+      options:
+        - Windows
+        - macOS
+        - Linux
+    validations:
+      required: true
+  - type: dropdown
     id: severity
     attributes:
       label: 问题严重程度
@@ -76,9 +87,9 @@ body:
   - type: input
     id: os
     attributes:
-      label: 操作系统
-      description: 例如：Windows 11、macOS 14.2、Ubuntu 22.04
-      placeholder: Windows 11
+      label: 操作系统版本
+      description: 例如：Windows 11 24H2、macOS 15.0、Ubuntu 24.04
+      placeholder: Windows 11 24H2
     validations:
       required: true
   - type: input

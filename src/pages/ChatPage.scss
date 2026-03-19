@@ -4800,6 +4800,18 @@
   color: var(--text-tertiary);
   background: var(--bg-secondary);
   font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+
+  .search-phase-hint {
+    color: var(--primary);
+    font-weight: 400;
+
+    &.done {
+      color: var(--text-tertiary);
+    }
+  }
 }
 
 // 全局消息搜索结果面板

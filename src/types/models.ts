@@ -46,6 +46,7 @@ export interface Message {
   messageKey: string
   localId: number
   serverId: number
+  serverIdRaw?: string
   localType: number
   createTime: number
   sortSeq: number

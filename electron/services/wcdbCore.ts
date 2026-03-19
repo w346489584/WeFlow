@@ -1233,6 +1233,28 @@ export class WcdbCore {
     }
   }
 
+  private preserveInt64FieldsInJson(jsonStr: string, fieldNames: string[]): string {
+    let normalized = String(jsonStr || '')
+    for (const fieldName of fieldNames) {
+      const escaped = fieldName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      const pattern = new RegExp(`("${escaped}"\\s*:\\s*)(-?\\d{16,})`, 'g')
+      normalized = normalized.replace(pattern, '$1"$2"')
+    }
+    return normalized
+  }
+
+  private parseMessageJson(jsonStr: string): any {
+    const normalized = this.preserveInt64FieldsInJson(jsonStr, [
+      'server_id',
+      'serverId',
+      'ServerId',
+      'msg_server_id',
+      'msgServerId',
+      'MsgServerId'
+    ])
+    return JSON.parse(normalized)
+  }
+
   private ensureReady(): boolean {
     return this.initialized && this.handle !== null
   }
@@ -1426,7 +1448,7 @@ export class WcdbCore {
       }
       const jsonStr = this.decodeJsonPtr(outPtr[0])
       if (!jsonStr) return { success: false, error: '解析消息失败' }
-      const messages = JSON.parse(jsonStr)
+      const messages = this.parseMessageJson(jsonStr)
       return { success: true, messages }
     } catch (e) {
       return { success: false, error: String(e) }
@@ -2491,7 +2513,7 @@ export class WcdbCore {
       }
       const jsonStr = this.decodeJsonPtr(outPtr[0])
       if (!jsonStr) return { success: false, error: '解析批次失败' }
-      const rows = JSON.parse(jsonStr)
+      const rows = this.parseMessageJson(jsonStr)
       return { success: true, rows, hasMore: outHasMore[0] === 1 }
     } catch (e) {
       return { success: false, error: String(e) }
@@ -2644,7 +2666,7 @@ export class WcdbCore {
       if (result !== 0 || !outPtr[0]) return { success: false, error: `查询消息失败: ${result}` }
       const jsonStr = this.decodeJsonPtr(outPtr[0])
       if (!jsonStr) return { success: false, error: '解析消息失败' }
-      const message = JSON.parse(jsonStr)
+      const message = this.parseMessageJson(jsonStr)
       // 处理 wcdb_get_message_by_id 返回空对象的情况
       if (Object.keys(message).length === 0) return { success: false, error: '未找到消息' }
       return { success: true, message }
@@ -2862,7 +2884,7 @@ export class WcdbCore {
       }
       const jsonStr = this.decodeJsonPtr(outPtr[0])
       if (!jsonStr) return { success: false, error: '解析搜索结果失败' }
-      const messages = JSON.parse(jsonStr)
+      const messages = this.parseMessageJson(jsonStr)
       return { success: true, messages }
     } catch (e) {
       return { success: false, error: String(e) }

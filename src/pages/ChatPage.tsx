@@ -41,6 +41,122 @@ interface PendingInSessionSearchPayload {
   results: Message[]
 }
 
+type GlobalMsgSearchPhase = 'idle' | 'seed' | 'backfill' | 'done'
+type GlobalMsgSearchResult = Message & { sessionId: string }
+
+interface GlobalMsgPrefixCacheEntry {
+  keyword: string
+  matchedSessionIds: Set<string>
+  completed: boolean
+}
+
+const GLOBAL_MSG_PER_SESSION_LIMIT = 10
+const GLOBAL_MSG_SEED_LIMIT = 120
+const GLOBAL_MSG_BACKFILL_CONCURRENCY = 3
+const GLOBAL_MSG_LEGACY_CONCURRENCY = 6
+const GLOBAL_MSG_SEARCH_CANCELED_ERROR = '__WEFLOW_GLOBAL_MSG_SEARCH_CANCELED__'
+const GLOBAL_MSG_SHADOW_COMPARE_SAMPLE_RATE = 0.2
+const GLOBAL_MSG_SHADOW_COMPARE_STORAGE_KEY = 'weflow.debug.searchShadowCompare'
+
+function isGlobalMsgSearchCanceled(error: unknown): boolean {
+  return String(error || '') === GLOBAL_MSG_SEARCH_CANCELED_ERROR
+}
+
+function normalizeGlobalMsgSearchSessionId(value: unknown): string | null {
+  const sessionId = String(value || '').trim()
+  if (!sessionId) return null
+  return sessionId
+}
+
+function normalizeGlobalMsgSearchMessages(
+  messages: Message[] | undefined,
+  fallbackSessionId?: string
+): GlobalMsgSearchResult[] {
+  if (!Array.isArray(messages) || messages.length === 0) return []
+  const dedup = new Set<string>()
+  const normalized: GlobalMsgSearchResult[] = []
+  const normalizedFallback = normalizeGlobalMsgSearchSessionId(fallbackSessionId)
+
+  for (const message of messages) {
+    const raw = message as Message & { sessionId?: string; _session_id?: string }
+    const sessionId = normalizeGlobalMsgSearchSessionId(raw.sessionId || raw._session_id || normalizedFallback)
+    if (!sessionId) continue
+    const uniqueKey = raw.localId > 0
+      ? `${sessionId}::local:${raw.localId}`
+      : `${sessionId}::key:${raw.messageKey || ''}:${raw.createTime || 0}`
+    if (dedup.has(uniqueKey)) continue
+    dedup.add(uniqueKey)
+    normalized.push({ ...message, sessionId })
+  }
+
+  return normalized
+}
+
+function buildGlobalMsgSearchSessionMap(messages: GlobalMsgSearchResult[]): Map<string, GlobalMsgSearchResult[]> {
+  const map = new Map<string, GlobalMsgSearchResult[]>()
+  for (const message of messages) {
+    if (!message.sessionId) continue
+    const list = map.get(message.sessionId) || []
+    if (list.length >= GLOBAL_MSG_PER_SESSION_LIMIT) continue
+    list.push(message)
+    map.set(message.sessionId, list)
+  }
+  return map
+}
+
+function flattenGlobalMsgSearchSessionMap(map: Map<string, GlobalMsgSearchResult[]>): GlobalMsgSearchResult[] {
+  const all: GlobalMsgSearchResult[] = []
+  for (const list of map.values()) {
+    if (list.length > 0) all.push(...list)
+  }
+  return sortMessagesByCreateTimeDesc(all)
+}
+
+function composeGlobalMsgSearchResults(
+  seedMap: Map<string, GlobalMsgSearchResult[]>,
+  authoritativeMap: Map<string, GlobalMsgSearchResult[]>
+): GlobalMsgSearchResult[] {
+  const merged = new Map<string, GlobalMsgSearchResult[]>()
+  for (const [sessionId, seedRows] of seedMap.entries()) {
+    if (authoritativeMap.has(sessionId)) {
+      merged.set(sessionId, authoritativeMap.get(sessionId) || [])
+    } else {
+      merged.set(sessionId, seedRows)
+    }
+  }
+  for (const [sessionId, rows] of authoritativeMap.entries()) {
+    if (!merged.has(sessionId)) merged.set(sessionId, rows)
+  }
+  return flattenGlobalMsgSearchSessionMap(merged)
+}
+
+function shouldRunGlobalMsgShadowCompareSample(): boolean {
+  if (!import.meta.env.DEV) return false
+  try {
+    const forced = window.localStorage.getItem(GLOBAL_MSG_SHADOW_COMPARE_STORAGE_KEY)
+    if (forced === '1') return true
+    if (forced === '0') return false
+  } catch {
+    // ignore storage read failures
+  }
+  return Math.random() < GLOBAL_MSG_SHADOW_COMPARE_SAMPLE_RATE
+}
+
+function buildGlobalMsgSearchSessionLocalIds(results: GlobalMsgSearchResult[]): Record<string, number[]> {
+  const grouped = new Map<string, number[]>()
+  for (const row of results) {
+    if (!row.sessionId || row.localId <= 0) continue
+    const list = grouped.get(row.sessionId) || []
+    list.push(row.localId)
+    grouped.set(row.sessionId, list)
+  }
+  const output: Record<string, number[]> = {}
+  for (const [sessionId, localIds] of grouped.entries()) {
+    output[sessionId] = localIds
+  }
+  return output
+}
+
 function sortMessagesByCreateTimeDesc<T extends Pick<Message, 'createTime' | 'localId'>>(items: T[]): T[] {
   return [...items].sort((a, b) => {
     const timeDiff = (b.createTime || 0) - (a.createTime || 0)
@@ -594,9 +710,6 @@ const SessionItem = React.memo(function SessionItem({
           <span className="session-name">
             {(() => {
               const shouldHighlight = (session.matchedField as any) === 'name' && searchKeyword
-              if (shouldHighlight) {
-                console.log('高亮名字:', session.displayName, 'keyword:', searchKeyword)
-              }
               return shouldHighlight ? (
                 <HighlightText text={session.displayName || session.username} keyword={searchKeyword} />
               ) : (
@@ -795,11 +908,15 @@ function ChatPage(props: ChatPageProps) {
   // 全局消息搜索
   const [showGlobalMsgSearch, setShowGlobalMsgSearch] = useState(false)
   const [globalMsgQuery, setGlobalMsgQuery] = useState('')
-  const [globalMsgResults, setGlobalMsgResults] = useState<Array<Message & { sessionId: string }>>([])
+  const [globalMsgResults, setGlobalMsgResults] = useState<GlobalMsgSearchResult[]>([])
   const [globalMsgSearching, setGlobalMsgSearching] = useState(false)
+  const [globalMsgSearchPhase, setGlobalMsgSearchPhase] = useState<GlobalMsgSearchPhase>('idle')
+  const [globalMsgIsBackfilling, setGlobalMsgIsBackfilling] = useState(false)
+  const [globalMsgAuthoritativeSessionCount, setGlobalMsgAuthoritativeSessionCount] = useState(0)
   const [globalMsgSearchError, setGlobalMsgSearchError] = useState<string | null>(null)
   const pendingInSessionSearchRef = useRef<PendingInSessionSearchPayload | null>(null)
   const pendingGlobalMsgSearchReplayRef = useRef<string | null>(null)
+  const globalMsgPrefixCacheRef = useRef<GlobalMsgPrefixCacheEntry | null>(null)
 
   // 自定义删除确认对话框
   const [deleteConfirm, setDeleteConfirm] = useState<{
@@ -2887,22 +3004,6 @@ function ChatPage(props: ChatPageProps) {
         ? (senderAvatarUrl || myAvatarUrl)
         : (senderAvatarUrl || (isDirectSearchSession ? resolvedSessionAvatarUrl : undefined))
 
-      if (inferredSelfFromSender) {
-        console.info('[InSessionSearch][GroupSelfHit][hydrate]', {
-          sessionId: normalizedSessionId,
-          localId: message.localId,
-          senderUsername,
-          rawIsSend: message.isSend,
-          nextIsSend,
-          rawSenderDisplayName: message.senderDisplayName,
-          nextSenderDisplayName,
-          rawSenderAvatarUrl: message.senderAvatarUrl,
-          nextSenderAvatarUrl,
-          myWxid,
-          hasMyAvatarUrl: Boolean(myAvatarUrl)
-        })
-      }
-
       if (
         senderUsername === message.senderUsername &&
         nextIsSend === message.isSend &&
@@ -3109,24 +3210,6 @@ function ChatPage(props: ChatPageProps) {
             (isDirectSearchSession ? resolvedSessionAvatarUrl : undefined)
           )
 
-      if (inferredSelfFromSender) {
-        console.info('[InSessionSearch][GroupSelfHit][enrich]', {
-          sessionId: normalizedSessionId,
-          localId: message.localId,
-          senderUsername: sender,
-          rawIsSend: message.isSend,
-          nextIsSend,
-          profileDisplayName,
-          currentSenderDisplayName,
-          nextSenderDisplayName,
-          profileAvatarUrl: normalizeSearchAvatarUrl(profile?.avatarUrl),
-          currentSenderAvatarUrl,
-          nextSenderAvatarUrl,
-          myWxid,
-          hasMyAvatarUrl: Boolean(myAvatarUrl)
-        })
-      }
-
       if (
         sender === message.senderUsername &&
         nextIsSend === message.isSend &&
@@ -3181,8 +3264,8 @@ function ChatPage(props: ChatPageProps) {
       if (switchRequestSeq && switchRequestSeq !== sessionSwitchRequestSeqRef.current) return
       if (currentSessionRef.current !== normalizedSessionId) return
       setInSessionResults(enrichedResults)
-    }).catch((error) => {
-      console.warn('[InSessionSearch] 恢复全局搜索结果发送者信息失败:', error)
+    }).catch(() => {
+      // ignore sender enrichment errors and keep current search results usable
     }).finally(() => {
       if (switchRequestSeq && switchRequestSeq !== sessionSwitchRequestSeqRef.current) return
       if (currentSessionRef.current !== normalizedSessionId) return
@@ -3382,8 +3465,8 @@ function ChatPage(props: ChatPageProps) {
         void enrichMessagesWithSenderProfiles(messages, sid).then((enriched) => {
           if (gen !== inSessionSearchGenRef.current || currentSessionRef.current !== sid) return
           setInSessionResults(enriched)
-        }).catch((error) => {
-          console.warn('[InSessionSearch] 补充发送者信息失败:', error)
+        }).catch(() => {
+          // ignore sender enrichment errors and keep current search results usable
         }).finally(() => {
           if (gen !== inSessionSearchGenRef.current || currentSessionRef.current !== sid) return
           setInSessionEnriching(false)
@@ -3417,6 +3500,109 @@ function ChatPage(props: ChatPageProps) {
   // 全局消息搜索
   const globalMsgSearchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const globalMsgSearchGenRef = useRef(0)
+  const ensureGlobalMsgSearchNotStale = useCallback((gen: number) => {
+    if (gen !== globalMsgSearchGenRef.current) {
+      throw new Error(GLOBAL_MSG_SEARCH_CANCELED_ERROR)
+    }
+  }, [])
+
+  const runLegacyGlobalMsgSearch = useCallback(async (
+    keyword: string,
+    sessionList: ChatSession[],
+    gen: number
+  ): Promise<GlobalMsgSearchResult[]> => {
+    const results: GlobalMsgSearchResult[] = []
+    for (let index = 0; index < sessionList.length; index += GLOBAL_MSG_LEGACY_CONCURRENCY) {
+      ensureGlobalMsgSearchNotStale(gen)
+      const chunk = sessionList.slice(index, index + GLOBAL_MSG_LEGACY_CONCURRENCY)
+      const chunkResults = await Promise.allSettled(
+        chunk.map(async (session) => {
+          const res = await window.electronAPI.chat.searchMessages(keyword, session.username, GLOBAL_MSG_PER_SESSION_LIMIT, 0)
+          if (!res?.success) {
+            throw new Error(res?.error || `搜索失败: ${session.username}`)
+          }
+          return normalizeGlobalMsgSearchMessages(res?.messages || [], session.username)
+        })
+      )
+      ensureGlobalMsgSearchNotStale(gen)
+
+      for (const item of chunkResults) {
+        if (item.status === 'rejected') {
+          throw item.reason instanceof Error ? item.reason : new Error(String(item.reason))
+        }
+        if (item.value.length > 0) {
+          results.push(...item.value)
+        }
+      }
+    }
+    return sortMessagesByCreateTimeDesc(results)
+  }, [ensureGlobalMsgSearchNotStale])
+
+  const compareGlobalMsgSearchShadow = useCallback((
+    keyword: string,
+    stagedResults: GlobalMsgSearchResult[],
+    legacyResults: GlobalMsgSearchResult[]
+  ) => {
+    const stagedMap = buildGlobalMsgSearchSessionLocalIds(stagedResults)
+    const legacyMap = buildGlobalMsgSearchSessionLocalIds(legacyResults)
+    const stagedSessions = Object.keys(stagedMap).sort()
+    const legacySessions = Object.keys(legacyMap).sort()
+
+    let mismatch = stagedSessions.length !== legacySessions.length
+    if (!mismatch) {
+      for (let i = 0; i < stagedSessions.length; i += 1) {
+        if (stagedSessions[i] !== legacySessions[i]) {
+          mismatch = true
+          break
+        }
+      }
+    }
+
+    if (!mismatch) {
+      for (const sessionId of stagedSessions) {
+        const stagedIds = stagedMap[sessionId] || []
+        const legacyIds = legacyMap[sessionId] || []
+        if (stagedIds.length !== legacyIds.length) {
+          mismatch = true
+          break
+        }
+        for (let i = 0; i < stagedIds.length; i += 1) {
+          if (stagedIds[i] !== legacyIds[i]) {
+            mismatch = true
+            break
+          }
+        }
+        if (mismatch) break
+      }
+    }
+
+    if (!mismatch) {
+      const stagedOrder = stagedResults.map((row) => `${row.sessionId}:${row.localId || 0}:${row.messageKey || ''}`)
+      const legacyOrder = legacyResults.map((row) => `${row.sessionId}:${row.localId || 0}:${row.messageKey || ''}`)
+      if (stagedOrder.length !== legacyOrder.length) {
+        mismatch = true
+      } else {
+        for (let i = 0; i < stagedOrder.length; i += 1) {
+          if (stagedOrder[i] !== legacyOrder[i]) {
+            mismatch = true
+            break
+          }
+        }
+      }
+    }
+
+    if (!mismatch) return
+    console.warn('[GlobalMsgSearch] shadow compare mismatch', {
+      keyword,
+      stagedSessionCount: stagedSessions.length,
+      legacySessionCount: legacySessions.length,
+      stagedResultCount: stagedResults.length,
+      legacyResultCount: legacyResults.length,
+      stagedMap,
+      legacyMap
+    })
+  }, [])
+
   const handleGlobalMsgSearch = useCallback(async (keyword: string) => {
     const normalizedKeyword = keyword.trim()
     setGlobalMsgQuery(keyword)
@@ -3425,14 +3611,21 @@ function ChatPage(props: ChatPageProps) {
     globalMsgSearchGenRef.current += 1
     if (!normalizedKeyword) {
       pendingGlobalMsgSearchReplayRef.current = null
+      globalMsgPrefixCacheRef.current = null
       setGlobalMsgResults([])
       setGlobalMsgSearchError(null)
       setShowGlobalMsgSearch(false)
       setGlobalMsgSearching(false)
+      setGlobalMsgSearchPhase('idle')
+      setGlobalMsgIsBackfilling(false)
+      setGlobalMsgAuthoritativeSessionCount(0)
       return
     }
     setShowGlobalMsgSearch(true)
     setGlobalMsgSearchError(null)
+    setGlobalMsgSearchPhase('seed')
+    setGlobalMsgIsBackfilling(false)
+    setGlobalMsgAuthoritativeSessionCount(0)
 
     const sessionList = Array.isArray(sessionsRef.current) ? sessionsRef.current.filter((session) => String(session.username || '').trim()) : []
     if (!isConnectedRef.current || sessionList.length === 0) {
@@ -3440,6 +3633,9 @@ function ChatPage(props: ChatPageProps) {
       setGlobalMsgResults([])
       setGlobalMsgSearchError(null)
       setGlobalMsgSearching(false)
+      setGlobalMsgSearchPhase('idle')
+      setGlobalMsgIsBackfilling(false)
+      setGlobalMsgAuthoritativeSessionCount(0)
       return
     }
 
@@ -3448,64 +3644,135 @@ function ChatPage(props: ChatPageProps) {
     globalMsgSearchTimerRef.current = setTimeout(async () => {
       if (gen !== globalMsgSearchGenRef.current) return
       setGlobalMsgSearching(true)
+      setGlobalMsgSearchPhase('seed')
+      setGlobalMsgIsBackfilling(false)
+      setGlobalMsgAuthoritativeSessionCount(0)
       try {
-        const results: Array<Message & { sessionId: string }> = []
-        const concurrency = 6
+        ensureGlobalMsgSearchNotStale(gen)
 
-        for (let index = 0; index < sessionList.length; index += concurrency) {
-          const chunk = sessionList.slice(index, index + concurrency)
+        const seedResponse = await window.electronAPI.chat.searchMessages(normalizedKeyword, undefined, GLOBAL_MSG_SEED_LIMIT, 0)
+        if (!seedResponse?.success) {
+          throw new Error(seedResponse?.error || '搜索失败')
+        }
+        ensureGlobalMsgSearchNotStale(gen)
+
+        const seedRows = normalizeGlobalMsgSearchMessages(seedResponse?.messages || [])
+        const seedMap = buildGlobalMsgSearchSessionMap(seedRows)
+        const authoritativeMap = new Map<string, GlobalMsgSearchResult[]>()
+        setGlobalMsgResults(composeGlobalMsgSearchResults(seedMap, authoritativeMap))
+        setGlobalMsgSearchError(null)
+        setGlobalMsgSearchPhase('backfill')
+        setGlobalMsgIsBackfilling(true)
+
+        const previousPrefixCache = globalMsgPrefixCacheRef.current
+        const previousKeyword = String(previousPrefixCache?.keyword || '').trim()
+        const canUsePrefixCache = Boolean(
+          previousPrefixCache &&
+          previousPrefixCache.completed &&
+          previousKeyword &&
+          normalizedKeyword.startsWith(previousKeyword)
+        )
+        let targetSessionList = canUsePrefixCache
+          ? sessionList.filter((session) => previousPrefixCache?.matchedSessionIds.has(session.username))
+          : sessionList
+        if (canUsePrefixCache && previousPrefixCache) {
+          let foundOutsidePrefix = false
+          for (const sessionId of seedMap.keys()) {
+            if (!previousPrefixCache.matchedSessionIds.has(sessionId)) {
+              foundOutsidePrefix = true
+              break
+            }
+          }
+          if (foundOutsidePrefix) {
+            targetSessionList = sessionList
+          }
+        }
+
+        for (let index = 0; index < targetSessionList.length; index += GLOBAL_MSG_BACKFILL_CONCURRENCY) {
+          ensureGlobalMsgSearchNotStale(gen)
+          const chunk = targetSessionList.slice(index, index + GLOBAL_MSG_BACKFILL_CONCURRENCY)
           const chunkResults = await Promise.allSettled(
             chunk.map(async (session) => {
-              const res = await window.electronAPI.chat.searchMessages(normalizedKeyword, session.username, 10, 0)
+              const res = await window.electronAPI.chat.searchMessages(normalizedKeyword, session.username, GLOBAL_MSG_PER_SESSION_LIMIT, 0)
               if (!res?.success) {
                 throw new Error(res?.error || `搜索失败: ${session.username}`)
               }
-              if (!res?.messages?.length) return []
-              return res.messages.map((msg) => ({ ...msg, sessionId: session.username }))
+              return {
+                sessionId: session.username,
+                messages: normalizeGlobalMsgSearchMessages(res?.messages || [], session.username)
+              }
             })
           )
-
-          if (gen !== globalMsgSearchGenRef.current) return
+          ensureGlobalMsgSearchNotStale(gen)
 
           for (const item of chunkResults) {
             if (item.status === 'rejected') {
               throw item.reason instanceof Error ? item.reason : new Error(String(item.reason))
             }
-            if (item.value.length > 0) {
-              results.push(...item.value)
-            }
+            authoritativeMap.set(item.value.sessionId, item.value.messages)
           }
+          setGlobalMsgAuthoritativeSessionCount(authoritativeMap.size)
+          setGlobalMsgResults(composeGlobalMsgSearchResults(seedMap, authoritativeMap))
         }
 
-        results.sort((a, b) => {
-          const timeDiff = (b.createTime || 0) - (a.createTime || 0)
-          if (timeDiff !== 0) return timeDiff
-          return (b.localId || 0) - (a.localId || 0)
-        })
-
-        if (gen !== globalMsgSearchGenRef.current) return
-        setGlobalMsgResults(results)
+        ensureGlobalMsgSearchNotStale(gen)
+        const finalResults = composeGlobalMsgSearchResults(seedMap, authoritativeMap)
+        setGlobalMsgResults(finalResults)
         setGlobalMsgSearchError(null)
+        setGlobalMsgSearchPhase('done')
+        setGlobalMsgIsBackfilling(false)
+
+        const matchedSessionIds = new Set<string>()
+        for (const row of finalResults) {
+          matchedSessionIds.add(row.sessionId)
+        }
+        globalMsgPrefixCacheRef.current = {
+          keyword: normalizedKeyword,
+          matchedSessionIds,
+          completed: true
+        }
+
+        if (shouldRunGlobalMsgShadowCompareSample()) {
+          void (async () => {
+            try {
+              const legacyResults = await runLegacyGlobalMsgSearch(normalizedKeyword, sessionList, gen)
+              if (gen !== globalMsgSearchGenRef.current) return
+              compareGlobalMsgSearchShadow(normalizedKeyword, finalResults, legacyResults)
+            } catch (error) {
+              if (isGlobalMsgSearchCanceled(error)) return
+              console.warn('[GlobalMsgSearch] shadow compare failed:', error)
+            }
+          })()
+        }
       } catch (error) {
+        if (isGlobalMsgSearchCanceled(error)) return
         if (gen !== globalMsgSearchGenRef.current) return
         setGlobalMsgResults([])
         setGlobalMsgSearchError(error instanceof Error ? error.message : String(error))
+        setGlobalMsgSearchPhase('done')
+        setGlobalMsgIsBackfilling(false)
+        setGlobalMsgAuthoritativeSessionCount(0)
+        globalMsgPrefixCacheRef.current = null
       } finally {
         if (gen === globalMsgSearchGenRef.current) setGlobalMsgSearching(false)
       }
     }, 500)
-  }, [])
+  }, [compareGlobalMsgSearchShadow, ensureGlobalMsgSearchNotStale, runLegacyGlobalMsgSearch])
 
   const handleCloseGlobalMsgSearch = useCallback(() => {
     globalMsgSearchGenRef.current += 1
     if (globalMsgSearchTimerRef.current) clearTimeout(globalMsgSearchTimerRef.current)
     globalMsgSearchTimerRef.current = null
     pendingGlobalMsgSearchReplayRef.current = null
+    globalMsgPrefixCacheRef.current = null
     setShowGlobalMsgSearch(false)
     setGlobalMsgQuery('')
     setGlobalMsgResults([])
     setGlobalMsgSearchError(null)
     setGlobalMsgSearching(false)
+    setGlobalMsgSearchPhase('idle')
+    setGlobalMsgIsBackfilling(false)
+    setGlobalMsgAuthoritativeSessionCount(0)
   }, [])
 
   // 滚动加载更多 + 显示/隐藏回到底部按钮（优化：节流，避免频繁执行）
@@ -3837,6 +4104,7 @@ function ChatPage(props: ChatPageProps) {
         clearTimeout(globalMsgSearchTimerRef.current)
         globalMsgSearchTimerRef.current = null
       }
+      globalMsgPrefixCacheRef.current = null
     }
   }, [])
 
@@ -4943,19 +5211,26 @@ function ChatPage(props: ChatPageProps) {
         {/* 全局消息搜索结果 */}
         {globalMsgQuery && (
           <div className="global-msg-search-results">
-            {globalMsgSearching ? (
-              <div className="search-loading">
-                <Loader2 className="spin" size={20} />
-                <span>搜索中...</span>
-              </div>
-            ) : globalMsgSearchError ? (
+            {globalMsgSearchError ? (
               <div className="no-results">
                 <AlertCircle size={32} />
                 <p>{globalMsgSearchError}</p>
               </div>
             ) : globalMsgResults.length > 0 ? (
               <>
-                <div className="search-section-header">聊天记录：</div>
+                <div className="search-section-header">
+                  聊天记录：
+                  {globalMsgSearching && (
+                    <span className="search-phase-hint">
+                      {globalMsgIsBackfilling
+                        ? `补全中 ${globalMsgAuthoritativeSessionCount > 0 ? `(${globalMsgAuthoritativeSessionCount})` : ''}...`
+                        : '搜索中...'}
+                    </span>
+                  )}
+                  {!globalMsgSearching && globalMsgSearchPhase === 'done' && (
+                    <span className="search-phase-hint done">已完成</span>
+                  )}
+                </div>
                 <div className="search-results-list">
                   {Object.entries(
                     globalMsgResults.reduce((acc, msg) => {
@@ -5005,6 +5280,11 @@ function ChatPage(props: ChatPageProps) {
                   })}
                 </div>
               </>
+            ) : globalMsgSearching ? (
+              <div className="search-loading">
+                <Loader2 className="spin" size={20} />
+                <span>{globalMsgSearchPhase === 'seed' ? '搜索中...' : '补全中...'}</span>
+              </div>
             ) : (
               <div className="no-results">
                 <MessageSquare size={32} />
@@ -6340,12 +6620,12 @@ const senderAvatarLoading = new Map<string, Promise<{ avatarUrl?: string; displa
 
 const buildVoiceCacheIdentity = (
   sessionId: string,
-  message: Pick<Message, 'localId' | 'createTime' | 'serverId'>
+  message: Pick<Message, 'localId' | 'createTime' | 'serverId' | 'serverIdRaw'>
 ): string => {
   const normalizedSessionId = String(sessionId || '').trim()
   const localId = Math.max(0, Math.floor(Number(message?.localId || 0)))
   const createTime = Math.max(0, Math.floor(Number(message?.createTime || 0)))
-  const serverIdRaw = String(message?.serverId ?? '').trim()
+  const serverIdRaw = String(message?.serverIdRaw ?? message?.serverId ?? '').trim()
   const serverId = /^\d+$/.test(serverIdRaw)
     ? serverIdRaw.replace(/^0+(?=\d)/, '')
     : String(Math.max(0, Math.floor(Number(serverIdRaw || 0))))
@@ -7401,7 +7681,7 @@ function MessageBubble({
               session.username,
               String(message.localId),
               message.createTime,
-              message.serverId
+              message.serverIdRaw || message.serverId
             )
             if (result.success && result.data) {
               const url = `data:audio/wav;base64,${result.data}`
