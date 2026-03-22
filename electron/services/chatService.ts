@@ -5055,7 +5055,17 @@ class ChatService {
 
       const contact = await this.getContact(username)
       const avatarResult = await wcdbService.getAvatarUrls([username])
-      const avatarUrl = avatarResult.success && avatarResult.map ? avatarResult.map[username] : undefined
+      let avatarUrl = avatarResult.success && avatarResult.map ? avatarResult.map[username] : undefined
+      if (!this.isValidAvatarUrl(avatarUrl)) {
+        avatarUrl = undefined
+      }
+      if (!avatarUrl) {
+        const headImageAvatars = await this.getAvatarsFromHeadImageDb([username])
+        const fallbackAvatarUrl = headImageAvatars[username]
+        if (this.isValidAvatarUrl(fallbackAvatarUrl)) {
+          avatarUrl = fallbackAvatarUrl
+        }
+      }
       const displayName = contact?.remark || contact?.nickName || contact?.alias || cached?.displayName || username
       const cacheEntry: ContactCacheEntry = {
         avatarUrl,
@@ -5521,6 +5531,13 @@ class ChatService {
         const avatarCandidate = avatarResult.value.map[normalizedSessionId]
         if (this.isValidAvatarUrl(avatarCandidate)) {
           avatarUrl = avatarCandidate
+        }
+      }
+      if (!avatarUrl) {
+        const headImageAvatars = await this.getAvatarsFromHeadImageDb([normalizedSessionId])
+        const fallbackAvatarUrl = headImageAvatars[normalizedSessionId]
+        if (this.isValidAvatarUrl(fallbackAvatarUrl)) {
+          avatarUrl = fallbackAvatarUrl
         }
       }
 

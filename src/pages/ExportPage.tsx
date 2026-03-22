@@ -49,6 +49,7 @@ import { SnsPostItem } from '../components/Sns/SnsPostItem'
 import { ContactSnsTimelineDialog } from '../components/Sns/ContactSnsTimelineDialog'
 import { ExportDateRangeDialog } from '../components/Export/ExportDateRangeDialog'
 import { ExportDefaultsSettingsForm, type ExportDefaultsSettingsPatch } from '../components/Export/ExportDefaultsSettingsForm'
+import { Avatar } from '../components/Avatar'
 import type { SnsPost } from '../types/sns'
 import {
   cloneExportDateRange,
@@ -536,6 +537,14 @@ const exportKindPriority: Record<ConversationTab, number> = {
 const getAvatarLetter = (name: string): string => {
   if (!name) return '?'
   return [...name][0] || '?'
+}
+
+const normalizeExportAvatarUrl = (value?: string | null): string | undefined => {
+  const normalized = String(value || '').trim()
+  if (!normalized) return undefined
+  const lower = normalized.toLowerCase()
+  if (lower === 'null' || lower === 'undefined') return undefined
+  return normalized
 }
 
 const toComparableNameSet = (values: Array<string | undefined | null>): Set<string> => {
@@ -1713,6 +1722,7 @@ function ExportPage() {
     startIndex: 0,
     endIndex: -1
   })
+  const avatarHydrationRequestedRef = useRef<Set<string>>(new Set())
   const sessionMutualFriendsMetricsRef = useRef<Record<string, SessionMutualFriendsMetric>>({})
   const sessionMutualFriendsDirectMetricsRef = useRef<Record<string, SessionMutualFriendsMetric>>({})
   const sessionMutualFriendsQueueRef = useRef<string[]>([])
@@ -1957,6 +1967,7 @@ function ExportPage() {
             displayName: contact.displayName,
             remark: contact.remark,
             nickname: contact.nickname,
+            alias: contact.alias,
             type: contact.type
           }))
         ).catch((error) => {
@@ -1997,6 +2008,94 @@ function ExportPage() {
       }
     }
   }, [ensureExportCacheScope, syncContactTypeCounts])
+
+  const hydrateVisibleContactAvatars = useCallback(async (usernames: string[]) => {
+    const targets = Array.from(new Set(
+      (usernames || [])
+        .map((username) => String(username || '').trim())
+        .filter(Boolean)
+    )).filter((username) => {
+      if (avatarHydrationRequestedRef.current.has(username)) return false
+      const contact = contactsList.find((item) => item.username === username)
+      const session = sessions.find((item) => item.username === username)
+      const existingAvatarUrl = normalizeExportAvatarUrl(contact?.avatarUrl || session?.avatarUrl)
+      return !existingAvatarUrl
+    })
+
+    if (targets.length === 0) return
+    targets.forEach((username) => avatarHydrationRequestedRef.current.add(username))
+
+    const settled = await Promise.allSettled(
+      targets.map(async (username) => {
+        const profile = await window.electronAPI.chat.getContactAvatar(username)
+        return {
+          username,
+          avatarUrl: normalizeExportAvatarUrl(profile?.avatarUrl),
+          displayName: profile?.displayName ? String(profile.displayName).trim() : undefined
+        }
+      })
+    )
+
+    const avatarPatches = new Map<string, { avatarUrl?: string; displayName?: string }>()
+    for (const item of settled) {
+      if (item.status !== 'fulfilled') continue
+      const { username, avatarUrl, displayName } = item.value
+      if (!avatarUrl && !displayName) continue
+      avatarPatches.set(username, { avatarUrl, displayName })
+    }
+    if (avatarPatches.size === 0) return
+
+    const now = Date.now()
+    setContactsList((prev) => prev.map((contact) => {
+      const patch = avatarPatches.get(contact.username)
+      if (!patch) return contact
+      return {
+        ...contact,
+        displayName: patch.displayName || contact.displayName,
+        avatarUrl: patch.avatarUrl || contact.avatarUrl
+      }
+    }))
+    setSessions((prev) => prev.map((session) => {
+      const patch = avatarPatches.get(session.username)
+      if (!patch) return session
+      return {
+        ...session,
+        displayName: patch.displayName || session.displayName,
+        avatarUrl: patch.avatarUrl || session.avatarUrl
+      }
+    }))
+    setSessionDetail((prev) => {
+      if (!prev) return prev
+      const patch = avatarPatches.get(prev.wxid)
+      if (!patch) return prev
+      return {
+        ...prev,
+        displayName: patch.displayName || prev.displayName,
+        avatarUrl: patch.avatarUrl || prev.avatarUrl
+      }
+    })
+
+    let avatarCacheChanged = false
+    for (const [username, patch] of avatarPatches.entries()) {
+      if (!patch.avatarUrl) continue
+      const previous = contactsAvatarCacheRef.current[username]
+      if (previous?.avatarUrl === patch.avatarUrl) continue
+      contactsAvatarCacheRef.current[username] = {
+        avatarUrl: patch.avatarUrl,
+        updatedAt: now,
+        checkedAt: now
+      }
+      avatarCacheChanged = true
+    }
+    if (avatarCacheChanged) {
+      setAvatarCacheUpdatedAt(now)
+      const scopeKey = exportCacheScopeRef.current
+      if (scopeKey) {
+        void configService.setContactsAvatarCache(scopeKey, contactsAvatarCacheRef.current).catch(() => {})
+      }
+    }
+  }, [contactsList, sessions])
+
 
   useEffect(() => {
     if (!isExportRoute) return
@@ -3824,10 +3923,12 @@ function ExportPage() {
               displayName: contact.displayName || contact.username,
               remark: contact.remark,
               nickname: contact.nickname,
+              alias: contact.alias,
               type: contact.type
             }))
 
             const persistAt = Date.now()
+            setContactsList(contactsForPersist)
             setSessions(nextSessions)
             sessionsHydratedAtRef.current = persistAt
             if (hasNetworkContactsSnapshot && contactsCachePayload.length > 0) {
@@ -5380,6 +5481,11 @@ function ExportPage() {
     const endIndex = Number.isFinite(range?.endIndex) ? Math.max(startIndex, Math.floor(range.endIndex)) : startIndex
     sessionMediaMetricVisibleRangeRef.current = { startIndex, endIndex }
     sessionMutualFriendsVisibleRangeRef.current = { startIndex, endIndex }
+    void hydrateVisibleContactAvatars(
+      filteredContacts
+        .slice(startIndex, endIndex + 1)
+        .map((contact) => contact.username)
+    )
     const visibleTargets = collectVisibleSessionMetricTargets(filteredContacts)
     if (visibleTargets.length === 0) return
     enqueueSessionMediaMetricRequests(visibleTargets, { front: true })
@@ -5395,9 +5501,22 @@ function ExportPage() {
     enqueueSessionMediaMetricRequests,
     enqueueSessionMutualFriendsRequests,
     filteredContacts,
+    hydrateVisibleContactAvatars,
     scheduleSessionMediaMetricWorker,
     scheduleSessionMutualFriendsWorker
   ])
+
+  useEffect(() => {
+    if (filteredContacts.length === 0) return
+    const bootstrapTargets = filteredContacts.slice(0, 24).map((contact) => contact.username)
+    void hydrateVisibleContactAvatars(bootstrapTargets)
+  }, [filteredContacts, hydrateVisibleContactAvatars])
+
+  useEffect(() => {
+    const sessionId = String(sessionDetail?.wxid || '').trim()
+    if (!sessionId) return
+    void hydrateVisibleContactAvatars([sessionId])
+  }, [hydrateVisibleContactAvatars, sessionDetail?.wxid])
 
   useEffect(() => {
     if (activeTaskCount > 0) return
@@ -5750,7 +5869,7 @@ function ExportPage() {
         displayName: mappedSession?.displayName || mappedContact?.displayName || prev?.displayName || normalizedSessionId,
         remark: sameSession ? prev?.remark : mappedContact?.remark,
         nickName: sameSession ? prev?.nickName : mappedContact?.nickname,
-        alias: sameSession ? prev?.alias : undefined,
+        alias: sameSession ? prev?.alias : mappedContact?.alias,
         avatarUrl: mappedSession?.avatarUrl || mappedContact?.avatarUrl || (sameSession ? prev?.avatarUrl : undefined),
         messageCount: initialMessageCount ?? (sameSession ? prev.messageCount : Number.NaN),
         voiceMessages: metricVoice ?? (sameSession ? prev?.voiceMessages : undefined),
@@ -6627,11 +6746,12 @@ function ExportPage() {
               </button>
             </div>
             <div className="contact-avatar">
-              {contact.avatarUrl ? (
-                <img src={contact.avatarUrl} alt="" loading="lazy" />
-              ) : (
-                <span>{getAvatarLetter(contact.displayName)}</span>
-              )}
+              <Avatar
+                src={normalizeExportAvatarUrl(contact.avatarUrl)}
+                name={contact.displayName}
+                size="100%"
+                shape="rounded"
+              />
             </div>
             <div className="contact-info">
               <div className="contact-name">{contact.displayName}</div>
@@ -7514,11 +7634,12 @@ function ExportPage() {
                 <div className="session-mutual-friends-header">
                   <div className="session-mutual-friends-header-main">
                     <div className="session-mutual-friends-avatar">
-                      {sessionMutualFriendsDialogTarget.avatarUrl ? (
-                        <img src={sessionMutualFriendsDialogTarget.avatarUrl} alt="" />
-                      ) : (
-                        <span>{getAvatarLetter(sessionMutualFriendsDialogTarget.displayName)}</span>
-                      )}
+                      <Avatar
+                        src={normalizeExportAvatarUrl(sessionMutualFriendsDialogTarget.avatarUrl)}
+                        name={sessionMutualFriendsDialogTarget.displayName}
+                        size="100%"
+                        shape="rounded"
+                      />
                     </div>
                     <div className="session-mutual-friends-meta">
                       <h4>{sessionMutualFriendsDialogTarget.displayName} 的共同好友</h4>
@@ -7599,11 +7720,12 @@ function ExportPage() {
               <div className="detail-header">
                 <div className="detail-header-main">
                   <div className="detail-header-avatar">
-                    {sessionDetail?.avatarUrl ? (
-                      <img src={sessionDetail.avatarUrl} alt="" />
-                    ) : (
-                      <span>{getAvatarLetter(sessionDetail?.displayName || sessionDetail?.wxid || '')}</span>
-                    )}
+                    <Avatar
+                      src={normalizeExportAvatarUrl(sessionDetail?.avatarUrl)}
+                      name={sessionDetail?.displayName || sessionDetail?.wxid || ''}
+                      size="100%"
+                      shape="rounded"
+                    />
                   </div>
                   <div className="detail-header-meta">
                     <h4>{sessionDetail?.displayName || '会话详情'}</h4>

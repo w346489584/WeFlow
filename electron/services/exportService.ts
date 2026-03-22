@@ -1000,6 +1000,26 @@ class ExportService {
     return `${localType}_${this.getStableMessageKey(msg)}`
   }
 
+  private getImageMissingRunCacheKey(
+    sessionId: string,
+    imageMd5?: unknown,
+    imageDatName?: unknown,
+    imageDeepSearchOnMiss = true
+  ): string | null {
+    const normalizedSessionId = String(sessionId || '').trim()
+    const normalizedImageMd5 = String(imageMd5 || '').trim().toLowerCase()
+    const normalizedImageDatName = String(imageDatName || '').trim().toLowerCase()
+    if (!normalizedSessionId) return null
+    if (!normalizedImageMd5 && !normalizedImageDatName) return null
+
+    const primaryToken = normalizedImageMd5 || normalizedImageDatName
+    const secondaryToken = normalizedImageMd5 && normalizedImageDatName && normalizedImageDatName !== normalizedImageMd5
+      ? normalizedImageDatName
+      : ''
+    const lookupMode = imageDeepSearchOnMiss ? 'deep' : 'hardlink'
+    return `${lookupMode}\u001f${normalizedSessionId}\u001f${primaryToken}\u001f${secondaryToken}`
+  }
+
   private normalizeEmojiMd5(value: unknown): string | undefined {
     const md5 = String(value || '').trim().toLowerCase()
     if (!/^[a-f0-9]{32}$/.test(md5)) return undefined

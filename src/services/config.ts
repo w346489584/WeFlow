@@ -662,6 +662,7 @@ export interface ContactsListCacheContact {
   displayName: string
   remark?: string
   nickname?: string
+  alias?: string
   type: 'friend' | 'group' | 'official' | 'former_friend' | 'other'
 }
 
@@ -1174,6 +1175,7 @@ export async function getContactsListCache(scopeKey: string): Promise<ContactsLi
       displayName,
       remark: typeof item.remark === 'string' ? item.remark : undefined,
       nickname: typeof item.nickname === 'string' ? item.nickname : undefined,
+      alias: typeof item.alias === 'string' ? item.alias : undefined,
       type: (type === 'friend' || type === 'group' || type === 'official' || type === 'former_friend' || type === 'other')
         ? type
         : 'other'
@@ -1207,6 +1209,7 @@ export async function setContactsListCache(scopeKey: string, contacts: ContactsL
       displayName,
       remark: contact?.remark ? String(contact.remark) : undefined,
       nickname: contact?.nickname ? String(contact.nickname) : undefined,
+      alias: contact?.alias ? String(contact.alias) : undefined,
       type
     })
   }
