@@ -95,7 +95,10 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
-          mapfile -t assets < <(find release -maxdepth 1 -type f | sort)
+          assets=()
+          while IFS= read -r file; do
+            assets+=("$file")
+          done < <(find release -maxdepth 1 -type f | sort)
           if [ "${#assets[@]}" -eq 0 ]; then
             echo "No release files found in ./release"
             exit 1
@@ -138,7 +141,10 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
-          mapfile -t assets < <(find release -maxdepth 1 -type f | sort)
+          assets=()
+          while IFS= read -r file; do
+            assets+=("$file")
+          done < <(find release -maxdepth 1 -type f | sort)
           if [ "${#assets[@]}" -eq 0 ]; then
             echo "No release files found in ./release"
             exit 1
@@ -181,7 +187,10 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
-          mapfile -t assets < <(find release -maxdepth 1 -type f | sort)
+          assets=()
+          while IFS= read -r file; do
+            assets+=("$file")
+          done < <(find release -maxdepth 1 -type f | sort)
           if [ "${#assets[@]}" -eq 0 ]; then
             echo "No release files found in ./release"
             exit 1
@@ -224,7 +233,10 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
-          mapfile -t assets < <(find release -maxdepth 1 -type f | sort)
+          assets=()
+          while IFS= read -r file; do
+            assets+=("$file")
+          done < <(find release -maxdepth 1 -type f | sort)
           if [ "${#assets[@]}" -eq 0 ]; then
             echo "No release files found in ./release"
             exit 1

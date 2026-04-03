@@ -62,6 +62,60 @@ const getEffectiveUpdateTrack = (): 'stable' | 'preview' | 'dev' => {
   return configuredTrack || defaultUpdateTrack
 }
 
+const isRemoteVersionNewer = (latestVersion: string, currentVersion: string): boolean => {
+  const latest = String(latestVersion || '').trim()
+  const current = String(currentVersion || '').trim()
+  if (!latest || !current) return false
+
+  const parseVersion = (version: string) => {
+    const normalized = version.replace(/^v/i, '')
+    const [main, pre = ''] = normalized.split('-', 2)
+    const core = main.split('.').map((segment) => Number.parseInt(segment, 10) || 0)
+    const prerelease = pre ? pre.split('.').map((segment) => /^\d+$/.test(segment) ? Number.parseInt(segment, 10) : segment) : []
+    return { core, prerelease }
+  }
+
+  const compareParsedVersion = (a: ReturnType<typeof parseVersion>, b: ReturnType<typeof parseVersion>): number => {
+    const maxLen = Math.max(a.core.length, b.core.length)
+    for (let i = 0; i < maxLen; i += 1) {
+      const left = a.core[i] || 0
+      const right = b.core[i] || 0
+      if (left > right) return 1
+      if (left < right) return -1
+    }
+
+    const aPre = a.prerelease
+    const bPre = b.prerelease
+    if (aPre.length === 0 && bPre.length === 0) return 0
+    if (aPre.length === 0) return 1
+    if (bPre.length === 0) return -1
+
+    const preMaxLen = Math.max(aPre.length, bPre.length)
+    for (let i = 0; i < preMaxLen; i += 1) {
+      const left = aPre[i]
+      const right = bPre[i]
+      if (left === undefined) return -1
+      if (right === undefined) return 1
+      if (left === right) continue
+
+      const leftNum = typeof left === 'number'
+      const rightNum = typeof right === 'number'
+      if (leftNum && rightNum) return left > right ? 1 : -1
+      if (leftNum) return -1
+      if (rightNum) return 1
+      return String(left) > String(right) ? 1 : -1
+    }
+
+    return 0
+  }
+
+  try {
+    return autoUpdater.currentVersion.compare(latest) < 0
+  } catch {
+    return compareParsedVersion(parseVersion(latest), parseVersion(current)) > 0
+  }
+}
+
 const applyAutoUpdateChannel = (reason: 'startup' | 'settings' = 'startup') => {
   const track = getEffectiveUpdateTrack()
   const baseUpdateChannel = track === 'stable' ? 'latest' : track
@@ -1283,7 +1337,7 @@ function registerIpcHandlers() {
       if (result && result.updateInfo) {
         const currentVersion = app.getVersion()
         const latestVersion = result.updateInfo.version
-        if (latestVersion !== currentVersion) {
+        if (isRemoteVersionNewer(latestVersion, currentVersion)) {
           return {
             hasUpdate: true,
             version: latestVersion,
@@ -2741,7 +2795,7 @@ function checkForUpdatesOnStartup() {
         const latestVersion = result.updateInfo.version
 
         // 检查是否有新版本
-        if (latestVersion !== currentVersion && mainWindow) {
+        if (isRemoteVersionNewer(latestVersion, currentVersion) && mainWindow) {
           // 检查该版本是否被用户忽略
           const ignoredVersion = configService?.get('ignoredUpdateVersion')
           if (ignoredVersion === latestVersion) {
