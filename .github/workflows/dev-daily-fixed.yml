@@ -6,6 +6,10 @@ on:
     - cron: "0 16 * * *"
   workflow_dispatch:
 
+concurrency:
+  group: dev-nightly-fixed-release
+  cancel-in-progress: true
+
 permissions:
   contents: write
 
@@ -329,9 +333,21 @@ jobs:
           - 如某个平台资源暂未生成，请进入[发布页]($RELEASE_PAGE)查看最新状态
           EOF
 
-          RELEASE_REST_ID="$(gh api "repos/$REPO/releases/tags/$TAG" --jq '.id')"
-          jq -n --rawfile body dev_release_notes.md \
-            '{name:"Daily Dev Build", body:$body, draft:false, prerelease:true}' \
-            > release_update_payload.json
-          gh api --method PATCH "repos/$REPO/releases/$RELEASE_REST_ID" --input release_update_payload.json >/dev/null
+          update_release_notes() {
+            local attempts=5
+            local delay_seconds=2
+            local i
+            for ((i=1; i<=attempts; i++)); do
+              if gh release edit "$TAG" --repo "$REPO" --title "Daily Dev Build" --notes-file dev_release_notes.md --prerelease >/dev/null 2>&1; then
+                return 0
+              fi
+              if [ "$i" -lt "$attempts" ]; then
+                echo "Release update failed (attempt $i/$attempts), retry in ${delay_seconds}s..."
+                sleep "$delay_seconds"
+              fi
+            done
+            return 1
+          }
+
+          update_release_notes
           gh release view "$TAG" --repo "$REPO" --json isDraft,isPrerelease,url
