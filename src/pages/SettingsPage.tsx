@@ -4445,6 +4445,7 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
   }
 
   return (
+    <>
     <div className={`settings-modal-overlay ${isClosing ? 'closing' : ''}`} onClick={handleClose}>
       <div className={`settings-page ${isClosing ? 'closing' : ''}`} onClick={(event) => event.stopPropagation()}>
         {message && <div className={`message-toast ${message.success ? 'success' : 'error'}`}>{message.text}</div>}
@@ -4618,6 +4619,7 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
 }
 
 export default SettingsPage
+
 
 
 
