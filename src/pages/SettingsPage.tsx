@@ -3268,8 +3268,7 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
               <label style={{ marginBottom: 0 }}>自定义 AI 见解提示词</label>
               <button
-                className="button-secondary"
-                style={{ fontSize: 12, padding: '3px 10px' }}
+                className="btn btn-secondary btn-sm"
                 onClick={async () => {
                   // 恢复默认：清空自定义值，UI 回到显示默认内容的状态
                   setAiInsightSystemPrompt('')
@@ -3676,8 +3675,7 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
                 <label style={{ marginBottom: 0 }}>足迹总结提示词</label>
                 <button
-                  className="button-secondary"
-                  style={{ fontSize: 12, padding: '3px 10px' }}
+                  className="btn btn-secondary btn-sm"
                   onClick={async () => {
                     setAiFootprintSystemPrompt('')
                     await configService.setAiFootprintSystemPrompt('')

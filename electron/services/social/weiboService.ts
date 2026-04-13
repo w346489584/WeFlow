@@ -203,7 +203,7 @@ class WeiboService {
       const uid = normalizeWeiboUid(uidInput)
       const cookie = normalizeWeiboCookieInput(cookieInput)
       if (!cookie) {
-        return { success: false, error: '请先填写有效的微博 Cookie' }
+        return { success: true, uid }
       }
 
       const timeline = await this.fetchTimeline(uid, cookie)
