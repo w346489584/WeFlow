@@ -796,6 +796,47 @@ ${topMentionText}
     return total
   }
 
+  private formatWeiboTimestamp(raw: string): string {
+    const parsed = Date.parse(String(raw || ''))
+    if (!Number.isFinite(parsed)) {
+      return String(raw || '').trim()
+    }
+    return new Date(parsed).toLocaleString('zh-CN')
+  }
+
+  private async getSocialContextSection(sessionId: string): Promise<string> {
+    const allowSocialContext = this.config.get('aiInsightAllowSocialContext') === true
+    if (!allowSocialContext) return ''
+
+    const rawCookie = String(this.config.get('aiInsightWeiboCookie') || '').trim()
+    if (!rawCookie) return ''
+
+    const bindings =
+      (this.config.get('aiInsightWeiboBindings') as Record<string, { uid?: string; screenName?: string }> | undefined) || {}
+    const binding = bindings[sessionId]
+    const uid = String(binding?.uid || '').trim()
+    if (!uid) return ''
+
+    const socialCountRaw = Number(this.config.get('aiInsightSocialContextCount') || 3)
+    const socialCount = Math.max(1, Math.min(5, Math.floor(socialCountRaw) || 3))
+
+    try {
+      const posts = await weiboService.fetchRecentPosts(uid, rawCookie, socialCount)
+      if (posts.length === 0) return ''
+
+      const lines = posts.map((post) => {
+        const time = this.formatWeiboTimestamp(post.createdAt)
+        const text = post.text.length > 180 ? `${post.text.slice(0, 180)}...` : post.text
+        return `[微博 ${time}] ${text}`
+      })
+      insightLog('INFO', `已加载 ${lines.length} 条微博公开内容 (uid=${uid})`)
+      return `近期公开社交平台内容（实验性，来源：微博，最近 ${lines.length} 条）：\n${lines.join('\n')}`
+    } catch (error) {
+      insightLog('WARN', `拉取微博公开内容失败 (uid=${uid}): ${(error as Error).message}`)
+      return ''
+    }
+  }
+
   // ── 沉默联系人扫描 ──────────────────────────────────────────────────────────
 
   private scheduleSilenceScan(): void {
@@ -1072,6 +1113,7 @@ ${topMentionText}
       `时间统计：${todayStatsDesc}`,
       `全局统计：${globalStatsDesc}`,
       contextSection,
+      socialContextSection,
       '请给出你的见解（≤80字）：'
     ].filter(Boolean).join('\n\n')
 
