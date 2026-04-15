@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron'
+﻿import { contextBridge, ipcRenderer } from 'electron'
 
 // 暴露给渲染进程的 API
 contextBridge.exposeInMainWorld('electronAPI', {
@@ -557,5 +557,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
       privateSegments?: Array<{ displayName?: string; session_id?: string; incoming_count?: number; outgoing_count?: number; message_count?: number; replied?: boolean }>
       mentionGroups?: Array<{ displayName?: string; session_id?: string; count?: number }>
     }) => ipcRenderer.invoke('insight:generateFootprintInsight', payload)
+  },
+
+  social: {
+    saveWeiboCookie: (rawInput: string) => ipcRenderer.invoke('social:saveWeiboCookie', rawInput),
+    validateWeiboUid: (uid: string) => ipcRenderer.invoke('social:validateWeiboUid', uid)
   }
 })
+

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+﻿import { useState, useEffect, useRef } from 'react'
 import { useLocation } from 'react-router-dom'
 import { useAppStore } from '../stores/appStore'
 import { useChatStore } from '../stores/chatStore'
@@ -48,7 +48,7 @@ const tabs: { id: Exclude<SettingsTab, 'insight' | 'aiFootprint'>; label: string
 ]
 
 const aiTabs: Array<{ id: Extract<SettingsTab, 'aiCommon' | 'insight' | 'aiFootprint'>; label: string }> = [
-  { id: 'aiCommon', label: 'AI 通用' },
+  { id: 'aiCommon', label: '基础配置' },
   { id: 'insight', label: 'AI 见解' },
   { id: 'aiFootprint', label: 'AI 足迹' }
 ]
@@ -284,6 +284,17 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
   const [aiInsightTelegramEnabled, setAiInsightTelegramEnabled] = useState(false)
   const [aiInsightTelegramToken, setAiInsightTelegramToken] = useState('')
   const [aiInsightTelegramChatIds, setAiInsightTelegramChatIds] = useState('')
+  const [aiInsightAllowSocialContext, setAiInsightAllowSocialContext] = useState(false)
+  const [aiInsightSocialContextCount, setAiInsightSocialContextCount] = useState(3)
+  const [aiInsightWeiboCookie, setAiInsightWeiboCookie] = useState('')
+  const [aiInsightWeiboBindings, setAiInsightWeiboBindings] = useState<Record<string, configService.AiInsightWeiboBinding>>({})
+  const [showWeiboCookieModal, setShowWeiboCookieModal] = useState(false)
+  const [weiboCookieDraft, setWeiboCookieDraft] = useState('')
+  const [weiboCookieError, setWeiboCookieError] = useState('')
+  const [isSavingWeiboCookie, setIsSavingWeiboCookie] = useState(false)
+  const [weiboBindingDrafts, setWeiboBindingDrafts] = useState<Record<string, string>>({})
+  const [weiboBindingErrors, setWeiboBindingErrors] = useState<Record<string, string>>({})
+  const [weiboBindingLoadingSessionId, setWeiboBindingLoadingSessionId] = useState<string | null>(null)
   const [aiFootprintEnabled, setAiFootprintEnabled] = useState(false)
   const [aiFootprintSystemPrompt, setAiFootprintSystemPrompt] = useState('')
   const [aiInsightDebugLogEnabled, setAiInsightDebugLogEnabled] = useState(false)
@@ -527,6 +538,10 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
       const savedAiInsightTelegramEnabled = await configService.getAiInsightTelegramEnabled()
       const savedAiInsightTelegramToken = await configService.getAiInsightTelegramToken()
       const savedAiInsightTelegramChatIds = await configService.getAiInsightTelegramChatIds()
+      const savedAiInsightAllowSocialContext = await configService.getAiInsightAllowSocialContext()
+      const savedAiInsightSocialContextCount = await configService.getAiInsightSocialContextCount()
+      const savedAiInsightWeiboCookie = await configService.getAiInsightWeiboCookie()
+      const savedAiInsightWeiboBindings = await configService.getAiInsightWeiboBindings()
       const savedAiFootprintEnabled = await configService.getAiFootprintEnabled()
       const savedAiFootprintSystemPrompt = await configService.getAiFootprintSystemPrompt()
       const savedAiInsightDebugLogEnabled = await configService.getAiInsightDebugLogEnabled()
@@ -546,6 +561,10 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
       setAiInsightTelegramEnabled(savedAiInsightTelegramEnabled)
       setAiInsightTelegramToken(savedAiInsightTelegramToken)
       setAiInsightTelegramChatIds(savedAiInsightTelegramChatIds)
+      setAiInsightAllowSocialContext(savedAiInsightAllowSocialContext)
+      setAiInsightSocialContextCount(savedAiInsightSocialContextCount)
+      setAiInsightWeiboCookie(savedAiInsightWeiboCookie)
+      setAiInsightWeiboBindings(savedAiInsightWeiboBindings)
       setAiFootprintEnabled(savedAiFootprintEnabled)
       setAiFootprintSystemPrompt(savedAiFootprintSystemPrompt)
       setAiInsightDebugLogEnabled(savedAiInsightDebugLogEnabled)
@@ -1684,6 +1703,7 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
           </div>
         </div>
       </div>
+
     </div>
   )
 
@@ -2331,6 +2351,7 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
           </button>
         </div>
       </div>
+
     </div>
   )
   const resolvedWhisperModelPath = whisperModelDir || whisperModelStatus?.modelPath || ''
@@ -2438,6 +2459,7 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
           </label>
         </div>
       </div>
+
     </div>
   )
 
@@ -2844,9 +2866,145 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
           )}
         </div>
       </div>
+
     </div>
   )
 
+  const withAsyncTimeout = async <T,>(task: Promise<T>, timeoutMs: number, timeoutMessage: string): Promise<T> => {
+    let timeoutHandle: ReturnType<typeof setTimeout> | null = null
+    try {
+      return await Promise.race([
+        task,
+        new Promise<T>((_, reject) => {
+          timeoutHandle = setTimeout(() => reject(new Error(timeoutMessage)), timeoutMs)
+        })
+      ])
+    } finally {
+      if (timeoutHandle) clearTimeout(timeoutHandle)
+    }
+  }
+
+  const hasWeiboCookieConfigured = aiInsightWeiboCookie.trim().length > 0
+
+  const openWeiboCookieModal = () => {
+    setWeiboCookieDraft(aiInsightWeiboCookie)
+    setWeiboCookieError('')
+    setShowWeiboCookieModal(true)
+  }
+
+  const persistWeiboCookieDraft = async (draftOverride?: string): Promise<boolean> => {
+    const draftToSave = draftOverride ?? weiboCookieDraft
+    if (draftToSave === aiInsightWeiboCookie) return true
+    setIsSavingWeiboCookie(true)
+    setWeiboCookieError('')
+    try {
+      const result = await withAsyncTimeout(
+        window.electronAPI.social.saveWeiboCookie(draftToSave),
+        10000,
+        '保存微博 Cookie 超时，请稍后重试'
+      )
+      if (!result.success) {
+        setWeiboCookieError(result.error || '微博 Cookie 保存失败')
+        return false
+      }
+      const normalized = result.normalized || ''
+      setAiInsightWeiboCookie(normalized)
+      setWeiboCookieDraft(normalized)
+      showMessage(result.hasCookie ? '微博 Cookie 已保存' : '微博 Cookie 已清空', true)
+      return true
+    } catch (e: any) {
+      setWeiboCookieError(e?.message || String(e))
+      return false
+    } finally {
+      setIsSavingWeiboCookie(false)
+    }
+  }
+
+  const handleCloseWeiboCookieModal = async (discard = false) => {
+    if (discard) {
+      setShowWeiboCookieModal(false)
+      setWeiboCookieDraft(aiInsightWeiboCookie)
+      setWeiboCookieError('')
+      return
+    }
+    const ok = await persistWeiboCookieDraft()
+    if (!ok) return
+    setShowWeiboCookieModal(false)
+    setWeiboCookieError('')
+  }
+
+  const getWeiboBindingDraftValue = (sessionId: string): string => {
+    const draft = weiboBindingDrafts[sessionId]
+    if (draft !== undefined) return draft
+    return aiInsightWeiboBindings[sessionId]?.uid || ''
+  }
+
+  const updateWeiboBindingDraft = (sessionId: string, value: string) => {
+    setWeiboBindingDrafts((prev) => ({
+      ...prev,
+      [sessionId]: value
+    }))
+    setWeiboBindingErrors((prev) => {
+      if (!prev[sessionId]) return prev
+      const next = { ...prev }
+      delete next[sessionId]
+      return next
+    })
+  }
+
+  const handleSaveWeiboBinding = async (sessionId: string, displayName: string) => {
+    const draftUid = getWeiboBindingDraftValue(sessionId)
+    setWeiboBindingLoadingSessionId(sessionId)
+    setWeiboBindingErrors((prev) => {
+      if (!prev[sessionId]) return prev
+      const next = { ...prev }
+      delete next[sessionId]
+      return next
+    })
+    try {
+      const result = await withAsyncTimeout(
+        window.electronAPI.social.validateWeiboUid(draftUid),
+        12000,
+        '微博 UID 校验超时，请稍后重试'
+      )
+      if (!result.success || !result.uid) {
+        setWeiboBindingErrors((prev) => ({ ...prev, [sessionId]: result.error || '微博 UID 校验失败' }))
+        return
+      }
+
+      const nextBindings: Record<string, configService.AiInsightWeiboBinding> = {
+        ...aiInsightWeiboBindings,
+        [sessionId]: {
+          uid: result.uid,
+          screenName: result.screenName,
+          updatedAt: Date.now()
+        }
+      }
+      setAiInsightWeiboBindings(nextBindings)
+      await configService.setAiInsightWeiboBindings(nextBindings)
+      setWeiboBindingDrafts((prev) => ({ ...prev, [sessionId]: result.uid! }))
+      showMessage(`已为「${displayName}」绑定微博 UID`, true)
+    } catch (e: any) {
+      setWeiboBindingErrors((prev) => ({ ...prev, [sessionId]: e?.message || String(e) }))
+    } finally {
+      setWeiboBindingLoadingSessionId(null)
+    }
+  }
+
+  const handleClearWeiboBinding = async (sessionId: string, silent = false) => {
+    const nextBindings = { ...aiInsightWeiboBindings }
+    delete nextBindings[sessionId]
+    setAiInsightWeiboBindings(nextBindings)
+    setWeiboBindingDrafts((prev) => ({ ...prev, [sessionId]: '' }))
+    setWeiboBindingErrors((prev) => {
+      if (!prev[sessionId]) return prev
+      const next = { ...prev }
+      delete next[sessionId]
+      return next
+    })
+    await configService.setAiInsightWeiboBindings(nextBindings)
+    if (!silent) showMessage('已清除微博绑定', true)
+  }
   const renderInsightTab = () => (
     <div className="tab-content">
       {/* 总开关 */}
@@ -2878,7 +3036,7 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
       <div className="form-group">
         <label>调试工具</label>
         <span className="form-hint">
-          该功能依赖「AI 通用」里的模型配置。用于验证完整链路（数据库→API→弹窗）。
+          该功能依赖「基础配置」里的模型配置。用于验证完整链路（数据库→API→弹窗）。
         </span>
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap', marginTop: '10px' }}>
           <button
@@ -3032,6 +3190,66 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
 
       <div className="divider" />
 
+      <div className="form-group">
+        <label>允许发送近期社交平台内容用于分析（实验性）</label>
+        <span className="form-hint">
+          当前仅支持微博，且仅对已手动绑定微博 UID 的联系人生效。为了控制资源占用和平台风控，程序只会在触发见解时按需抓取近期公开内容，不会做后台持续扫描。
+        </span>
+        <div className="log-toggle-line">
+          <span className="log-status">{aiInsightAllowSocialContext ? '已开启' : '已关闭'}</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 12, color: hasWeiboCookieConfigured ? 'var(--color-success, #22c55e)' : 'var(--text-tertiary)' }}>
+              {hasWeiboCookieConfigured ? '微博 Cookie 已配置' : '微博 Cookie 未配置'}
+            </span>
+            <button className="btn btn-secondary btn-sm" type="button" onClick={openWeiboCookieModal}>
+              {hasWeiboCookieConfigured ? '编辑微博 Cookie' : '填写微博 Cookie'}
+            </button>
+            <label className="switch">
+              <input
+                type="checkbox"
+                checked={aiInsightAllowSocialContext}
+                onChange={async (e) => {
+                  const val = e.target.checked
+                  setAiInsightAllowSocialContext(val)
+                  await configService.setAiInsightAllowSocialContext(val)
+                }}
+              />
+              <span className="switch-slider" />
+            </label>
+          </div>
+        </div>
+        {!hasWeiboCookieConfigured && (
+          <span className="form-hint" style={{ marginTop: 8, display: 'block' }}>
+            未配置微博 Cookie 时，也会尝试抓取微博公开内容；但可能因平台风控导致获取失败或内容较少。
+          </span>
+        )}
+      </div>
+
+      {aiInsightAllowSocialContext && (
+        <div className="form-group">
+          <label>发送近期社交平台内容条数</label>
+          <span className="form-hint">
+            当前仅支持微博最近发帖。
+            <br />
+            <strong>不建议超过 5，避免触发平台风控。</strong>
+          </span>
+          <input
+            type="number"
+            className="field-input"
+            value={aiInsightSocialContextCount}
+            min={1}
+            max={5}
+            onChange={(e) => {
+              const val = Math.max(1, Math.min(5, parseInt(e.target.value, 10) || 3))
+              setAiInsightSocialContextCount(val)
+              scheduleConfigSave('aiInsightSocialContextCount', () => configService.setAiInsightSocialContextCount(val))
+            }}
+            style={{ width: 100 }}
+          />
+        </div>
+      )}
+
+      <div className="divider" />
       {/* 自定义 System Prompt */}
       {(() => {
         const DEFAULT_SYSTEM_PROMPT = `你是用户的私人关系观察助手，名叫"见解"。你的任务是主动提供有价值的观察和建议。
@@ -3050,8 +3268,7 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
               <label style={{ marginBottom: 0 }}>自定义 AI 见解提示词</label>
               <button
-                className="button-secondary"
-                style={{ fontSize: 12, padding: '3px 10px' }}
+                className="btn btn-secondary btn-sm"
                 onClick={async () => {
                   // 恢复默认：清空自定义值，UI 回到显示默认内容的状态
                   setAiInsightSystemPrompt('')
@@ -3189,12 +3406,12 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
         }
 
         return (
-          <div className="anti-revoke-tab">
+          <div className="anti-revoke-tab insight-social-tab">
             <div className="anti-revoke-hero">
               <div className="anti-revoke-hero-main">
                 <h3>对话白名单</h3>
                 <p>
-                  开启后，AI 见解仅对勾选的私聊对话生效，未勾选的对话将被完全忽略。关闭时对所有私聊均生效。
+                  开启后，AI 见解仅对勾选的私聊对话生效，未勾选的对话将被完全忽略。关闭时对所有私聊均生效。中间可填写微博 UID。
                 </p>
               </div>
               <div className="anti-revoke-metrics">
@@ -3275,10 +3492,15 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
                 <>
                   <div className="anti-revoke-list-header">
                     <span>对话（{filteredSessions.length}）</span>
+                    <span className="insight-social-column-title">社交平台（微博）</span>
                     <span>状态</span>
                   </div>
                   {filteredSessions.map((session) => {
                     const isSelected = aiInsightWhitelist.has(session.username)
+                    const weiboBinding = aiInsightWeiboBindings[session.username]
+                    const weiboDraftValue = getWeiboBindingDraftValue(session.username)
+                    const isBindingLoading = weiboBindingLoadingSessionId === session.username
+                    const weiboBindingError = weiboBindingErrors[session.username]
                     return (
                       <div
                         key={session.username}
@@ -3312,6 +3534,48 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
                             <span className="name">{session.displayName || session.username}</span>
                           </div>
                         </label>
+                        <div className="insight-social-binding-cell">
+                          <div className="insight-social-binding-input-wrap">
+                            <span className="binding-platform-chip">微博</span>
+                            <input
+                              type="text"
+                              className="insight-social-binding-input"
+                              value={weiboDraftValue}
+                              placeholder="填写数字 UID"
+                              onChange={(e) => updateWeiboBindingDraft(session.username, e.target.value)}
+                            />
+                          </div>
+                          <div className="insight-social-binding-actions">
+                            <button
+                              type="button"
+                              className="btn btn-secondary btn-sm"
+                              onClick={() => void handleSaveWeiboBinding(session.username, session.displayName || session.username)}
+                              disabled={isBindingLoading || !weiboDraftValue.trim()}
+                            >
+                              {isBindingLoading ? '绑定中...' : (weiboBinding ? '更新' : '绑定')}
+                            </button>
+                            {weiboBinding && (
+                              <button
+                                type="button"
+                                className="btn btn-secondary btn-sm"
+                                onClick={() => void handleClearWeiboBinding(session.username)}
+                              >
+                                清除
+                              </button>
+                            )}
+                          </div>
+                          <div className="insight-social-binding-feedback">
+                            {weiboBindingError ? (
+                              <span className="binding-feedback error">{weiboBindingError}</span>
+                            ) : weiboBinding?.screenName ? (
+                              <span className="binding-feedback">@{weiboBinding.screenName}</span>
+                            ) : weiboBinding?.uid ? (
+                              <span className="binding-feedback">已绑定 UID：{weiboBinding.uid}</span>
+                            ) : (
+                              <span className="binding-feedback muted">仅支持手动填写数字 UID</span>
+                            )}
+                          </div>
+                        </div>
                         <div className="anti-revoke-row-status">
                           <span className={`status-badge ${isSelected ? 'installed' : 'not-installed'}`}>
                             <i className="status-dot" aria-hidden="true" />
@@ -3370,6 +3634,7 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
           </label>
         </div>
       </div>
+
     </div>
   )
 
@@ -3410,8 +3675,7 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
                 <label style={{ marginBottom: 0 }}>足迹总结提示词</label>
                 <button
-                  className="button-secondary"
-                  style={{ fontSize: 12, padding: '3px 10px' }}
+                  className="btn btn-secondary btn-sm"
                   onClick={async () => {
                     setAiFootprintSystemPrompt('')
                     await configService.setAiFootprintSystemPrompt('')
@@ -3934,6 +4198,7 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
           </div>
         </div>
       </div>
+
     </div>
   )
 
@@ -4117,6 +4382,7 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
           </label>
         </div>
       </div>
+
     </div>
   )
 
@@ -4197,6 +4463,7 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
   }
 
   return (
+    <>
     <div className={`settings-modal-overlay ${isClosing ? 'closing' : ''}`} onClick={handleClose}>
       <div className={`settings-page ${isClosing ? 'closing' : ''}`} onClick={(event) => event.stopPropagation()}>
         {message && <div className={`message-toast ${message.success ? 'success' : 'error'}`}>{message.text}</div>}
@@ -4253,43 +4520,51 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
 
         <div className="settings-layout">
           <div className="settings-tabs" role="tablist" aria-label="设置项">
-            {tabs.map(tab => (
-              <button
-                key={tab.id}
-                className={`tab-btn ${activeTab === tab.id ? 'active' : ''}`}
-                onClick={() => setActiveTab(tab.id)}
-              >
-                <tab.icon size={16} />
-                <span>{tab.label}</span>
-              </button>
-            ))}
+            {tabs.flatMap((tab) => {
+              const row: React.ReactNode[] = [
+                <button
+                  key={tab.id}
+                  className={`tab-btn ${activeTab === tab.id ? 'active' : ''}`}
+                  onClick={() => setActiveTab(tab.id)}
+                >
+                  <tab.icon size={16} />
+                  <span>{tab.label}</span>
+                </button>
+              ]
 
-            <div className={`tab-group ${aiGroupExpanded ? 'expanded' : ''}`}>
-              <button
-                className={`tab-btn tab-group-trigger ${(activeTab === 'aiCommon' || activeTab === 'insight' || activeTab === 'aiFootprint') ? 'active' : ''}`}
-                onClick={() => setAiGroupExpanded((prev) => !prev)}
-                aria-expanded={aiGroupExpanded}
-              >
-                <Sparkles size={16} />
-                <span>AI 相关</span>
-                <ChevronDown size={14} className={`tab-group-arrow ${aiGroupExpanded ? 'expanded' : ''}`} />
-              </button>
-              <div className={`tab-sublist-wrap ${aiGroupExpanded ? 'expanded' : 'collapsed'}`}>
-                <div className="tab-sublist">
-                  {aiTabs.map((tab) => (
+              if (tab.id === 'analytics') {
+                row.push(
+                  <div key="ai-settings-group" className={`tab-group ${aiGroupExpanded ? 'expanded' : ''}`}>
                     <button
-                      key={tab.id}
-                      className={`tab-btn tab-sub-btn ${activeTab === tab.id ? 'active' : ''}`}
-                      onClick={() => setActiveTab(tab.id)}
-                      tabIndex={aiGroupExpanded ? 0 : -1}
+                      className={`tab-btn tab-group-trigger ${(activeTab === 'aiCommon' || activeTab === 'insight' || activeTab === 'aiFootprint') ? 'active' : ''}`}
+                      onClick={() => setAiGroupExpanded((prev) => !prev)}
+                      aria-expanded={aiGroupExpanded}
                     >
-                      <span className="tab-sub-dot" />
-                      <span>{tab.label}</span>
+                      <Sparkles size={16} />
+                      <span>AI 设置</span>
+                      <ChevronDown size={14} className={`tab-group-arrow ${aiGroupExpanded ? 'expanded' : ''}`} />
                     </button>
-                  ))}
-                </div>
-              </div>
-            </div>
+                    <div className={`tab-sublist-wrap ${aiGroupExpanded ? 'expanded' : 'collapsed'}`}>
+                      <div className="tab-sublist">
+                        {aiTabs.map((tab) => (
+                          <button
+                            key={tab.id}
+                            className={`tab-btn tab-sub-btn ${activeTab === tab.id ? 'active' : ''}`}
+                            onClick={() => setActiveTab(tab.id)}
+                            tabIndex={aiGroupExpanded ? 0 : -1}
+                          >
+                            <span className="tab-sub-dot" />
+                            <span>{tab.label}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )
+              }
+
+              return row
+            })}
           </div>
 
           <div className="settings-body">
@@ -4311,7 +4586,77 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
         </div>
       </div>
     </div>
+
+      {showWeiboCookieModal && (
+        <div
+          className="social-cookie-modal-overlay"
+          onClick={(e) => {
+            e.stopPropagation()
+            void handleCloseWeiboCookieModal()
+          }}
+        >
+          <div className="settings-inline-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <Globe size={20} />
+              <h3>微博 Cookie（实验性）</h3>
+            </div>
+            <div className="modal-body">
+              <p className="warning-text">
+                仅用于微博公开内容补充分析，全局生效，不会写入仓库。支持直接粘贴浏览器导出的 Cookie JSON 数组，也支持原始 <code>name=value</code> 字符串。
+              </p>
+              <textarea
+                className="social-cookie-textarea"
+                value={weiboCookieDraft}
+                placeholder="粘贴微博 Cookie，关闭弹层时自动保存"
+                onChange={(e) => {
+                  setWeiboCookieDraft(e.target.value)
+                  setWeiboCookieError('')
+                }}
+              />
+              {weiboCookieError && (
+                <div className="social-inline-error">{weiboCookieError}</div>
+              )}
+            </div>
+            <div className="modal-footer">
+              <button className="btn btn-secondary" onClick={() => void handleCloseWeiboCookieModal(true)}>
+                取消更改
+              </button>
+              <button
+                className="btn btn-secondary"
+                onClick={async () => {
+                  setWeiboCookieDraft('')
+                  const ok = await persistWeiboCookieDraft('')
+                  if (ok) setShowWeiboCookieModal(false)
+                }}
+                disabled={isSavingWeiboCookie || !aiInsightWeiboCookie}
+              >
+                清空
+              </button>
+              <button className="btn btn-primary" onClick={() => { void handleCloseWeiboCookieModal() }} disabled={isSavingWeiboCookie}>
+                {isSavingWeiboCookie ? '保存中...' : '关闭并保存'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+    </>
   )
 }
 
 export default SettingsPage
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

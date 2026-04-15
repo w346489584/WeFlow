@@ -1,4 +1,4 @@
-import { join } from 'path'
+﻿import { join } from 'path'
 import { app, safeStorage } from 'electron'
 import crypto from 'crypto'
 import Store from 'electron-store'
@@ -82,6 +82,7 @@ interface ConfigSchema {
   aiInsightApiModel: string
   aiInsightSilenceDays: number
   aiInsightAllowContext: boolean
+  aiInsightAllowSocialContext: boolean
   aiInsightWhitelistEnabled: boolean
   aiInsightWhitelist: string[]
   /** 活跃分析冷却时间（分钟），0 表示无冷却 */
@@ -113,7 +114,8 @@ const ENCRYPTED_STRING_KEYS: Set<string> = new Set([
   'authPassword',
   'httpApiToken',
   'aiModelApiKey',
-  'aiInsightApiKey'
+  'aiInsightApiKey',
+  'aiInsightWeiboCookie'
 ])
 const ENCRYPTED_BOOL_KEYS: Set<string> = new Set(['authEnabled', 'authUseHello'])
 const ENCRYPTED_NUMBER_KEYS: Set<string> = new Set(['imageXorKey'])
@@ -196,15 +198,19 @@ export class ConfigService {
       aiInsightApiModel: 'gpt-4o-mini',
       aiInsightSilenceDays: 3,
       aiInsightAllowContext: false,
+      aiInsightAllowSocialContext: false,
       aiInsightWhitelistEnabled: false,
       aiInsightWhitelist: [],
       aiInsightCooldownMinutes: 120,
       aiInsightScanIntervalHours: 4,
       aiInsightContextCount: 40,
+      aiInsightSocialContextCount: 3,
       aiInsightSystemPrompt: '',
       aiInsightTelegramEnabled: false,
       aiInsightTelegramToken: '',
       aiInsightTelegramChatIds: '',
+      aiInsightWeiboCookie: '',
+      aiInsightWeiboBindings: {},
       aiFootprintEnabled: false,
       aiFootprintSystemPrompt: '',
       aiInsightDebugLogEnabled: false
@@ -825,3 +831,4 @@ export class ConfigService {
     this.unlockPassword = null
   }
 }
+

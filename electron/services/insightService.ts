@@ -1,4 +1,4 @@
-/**
+﻿/**
  * insightService.ts
  *
  * AI 见解后台服务：
@@ -21,6 +21,7 @@ import { URL } from 'url'
 import { app, Notification } from 'electron'
 import { ConfigService } from './config'
 import { chatService, ChatSession, Message } from './chatService'
+import { weiboService } from './social/weiboService'
 
 // ─── 常量 ────────────────────────────────────────────────────────────────────
 
@@ -46,6 +47,10 @@ const INSIGHT_CONFIG_KEYS = new Set([
   'aiModelApiBaseUrl',
   'aiModelApiKey',
   'aiModelApiModel',
+  'aiInsightAllowSocialContext',
+  'aiInsightSocialContextCount',
+  'aiInsightWeiboCookie',
+  'aiInsightWeiboBindings',
   'dbPath',
   'decryptKey',
   'myWxid'
@@ -318,6 +323,10 @@ class InsightService {
     if (!INSIGHT_CONFIG_KEYS.has(normalizedKey)) return
 
     // 数据库相关配置变更后，丢弃缓存并强制下次重连
+    if (normalizedKey === 'aiInsightAllowSocialContext' || normalizedKey === 'aiInsightSocialContextCount' || normalizedKey === 'aiInsightWeiboCookie' || normalizedKey === 'aiInsightWeiboBindings') {
+      weiboService.clearCache()
+    }
+
     if (normalizedKey === 'dbPath' || normalizedKey === 'decryptKey' || normalizedKey === 'myWxid') {
       this.clearRuntimeCache()
     }
@@ -350,6 +359,7 @@ class InsightService {
     this.lastSeenTimestamp.clear()
     this.todayTriggers.clear()
     this.todayDate = getStartOfDay()
+    weiboService.clearCache()
   }
 
   private clearTimers(): void {
@@ -786,6 +796,50 @@ ${topMentionText}
     return total
   }
 
+  private formatWeiboTimestamp(raw: string): string {
+    const parsed = Date.parse(String(raw || ''))
+    if (!Number.isFinite(parsed)) {
+      return String(raw || '').trim()
+    }
+    return new Date(parsed).toLocaleString('zh-CN')
+  }
+
+  private async getSocialContextSection(sessionId: string): Promise<string> {
+    const allowSocialContext = this.config.get('aiInsightAllowSocialContext') === true
+    if (!allowSocialContext) return ''
+
+    const rawCookie = String(this.config.get('aiInsightWeiboCookie') || '').trim()
+    const hasCookie = rawCookie.length > 0
+
+    const bindings =
+      (this.config.get('aiInsightWeiboBindings') as Record<string, { uid?: string; screenName?: string }> | undefined) || {}
+    const binding = bindings[sessionId]
+    const uid = String(binding?.uid || '').trim()
+    if (!uid) return ''
+
+    const socialCountRaw = Number(this.config.get('aiInsightSocialContextCount') || 3)
+    const socialCount = Math.max(1, Math.min(5, Math.floor(socialCountRaw) || 3))
+
+    try {
+      const posts = await weiboService.fetchRecentPosts(uid, rawCookie, socialCount)
+      if (posts.length === 0) return ''
+
+      const lines = posts.map((post) => {
+        const time = this.formatWeiboTimestamp(post.createdAt)
+        const text = post.text.length > 180 ? `${post.text.slice(0, 180)}...` : post.text
+        return `[微博 ${time}] ${text}`
+      })
+      insightLog('INFO', `已加载 ${lines.length} 条微博公开内容 (uid=${uid})`)
+      const riskHint = hasCookie
+        ? ''
+        : '\n提示：未配置微博 Cookie，使用移动端公开接口抓取，可能因平台风控导致获取失败或内容较少。'
+      return `近期公开社交平台内容（来源：微博，最近 ${lines.length} 条）：\n${lines.join('\n')}${riskHint}`
+    } catch (error) {
+      insightLog('WARN', `拉取微博公开内容失败 (uid=${uid}): ${(error as Error).message}`)
+      return ''
+    }
+  }
+
   // ── 沉默联系人扫描 ──────────────────────────────────────────────────────────
 
   private scheduleSilenceScan(): void {
@@ -1028,6 +1082,8 @@ ${topMentionText}
       }
     }
 
+    const socialContextSection = await this.getSocialContextSection(sessionId)
+
     // ── 默认 system prompt（稳定内容，有利于 provider 端 prompt cache 命中）────
     const DEFAULT_SYSTEM_PROMPT = `你是用户的私人关系观察助手，名叫"见解"。你的任务是主动提供有价值的观察和建议。
 
@@ -1060,6 +1116,7 @@ ${topMentionText}
       `时间统计：${todayStatsDesc}`,
       `全局统计：${globalStatsDesc}`,
       contextSection,
+      socialContextSection,
       '请给出你的见解（≤80字）：'
     ].filter(Boolean).join('\n\n')
 
@@ -1190,3 +1247,5 @@ ${topMentionText}
 }
 
 export const insightService = new InsightService()
+
+

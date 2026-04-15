@@ -1,4 +1,4 @@
-import './preload-env'
+﻿import './preload-env'
 import { app, BrowserWindow, ipcMain, nativeTheme, session, Tray, Menu, nativeImage } from 'electron'
 import { Worker } from 'worker_threads'
 import { randomUUID } from 'crypto'
@@ -31,6 +31,7 @@ import { destroyNotificationWindow, registerNotificationHandlers, showNotificati
 import { httpService } from './services/httpService'
 import { messagePushService } from './services/messagePushService'
 import { insightService } from './services/insightService'
+import { normalizeWeiboCookieInput, weiboService } from './services/social/weiboService'
 import { bizService } from './services/bizService'
 
 // 配置自动更新
@@ -1658,6 +1659,32 @@ function registerIpcHandlers() {
     mentionGroups?: Array<{ displayName?: string; session_id?: string; count?: number }>
   }) => {
     return insightService.generateFootprintInsight(payload)
+  })
+
+  ipcMain.handle('social:saveWeiboCookie', async (_, rawInput: string) => {
+    try {
+      if (!configService) {
+        return { success: false, error: 'Config service is not initialized' }
+      }
+      const normalized = normalizeWeiboCookieInput(rawInput)
+      configService.set('aiInsightWeiboCookie' as any, normalized as any)
+      weiboService.clearCache()
+      return { success: true, normalized, hasCookie: Boolean(normalized) }
+    } catch (error) {
+      return { success: false, error: (error as Error).message || 'Failed to save Weibo cookie' }
+    }
+  })
+
+  ipcMain.handle('social:validateWeiboUid', async (_, uid: string) => {
+    try {
+      if (!configService) {
+        return { success: false, error: 'Config service is not initialized' }
+      }
+      const cookie = String(configService.get('aiInsightWeiboCookie' as any) || '')
+      return await weiboService.validateUid(uid, cookie)
+    } catch (error) {
+      return { success: false, error: (error as Error).message || 'Failed to validate Weibo UID' }
+    }
   })
 
   ipcMain.handle('config:clear', async () => {
@@ -3866,3 +3893,7 @@ app.on('window-all-closed', () => {
     app.quit()
   }
 })
+
+
+
+

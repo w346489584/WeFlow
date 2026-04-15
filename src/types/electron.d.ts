@@ -1,10 +1,24 @@
-import type { ChatSession, Message, Contact, ContactInfo, ChatRecordItem } from './models'
+﻿import type { ChatSession, Message, Contact, ContactInfo, ChatRecordItem } from './models'
 
 export interface SessionChatWindowOpenOptions {
   source?: 'chat' | 'export'
   initialDisplayName?: string
   initialAvatarUrl?: string
   initialContactType?: ContactInfo['type']
+}
+
+export interface SocialValidateWeiboUidResult {
+  success: boolean
+  uid?: string
+  screenName?: string
+  error?: string
+}
+
+export interface SocialSaveWeiboCookieResult {
+  success: boolean
+  normalized?: string
+  hasCookie?: boolean
+  error?: string
 }
 
 export interface ElectronAPI {
@@ -1091,6 +1105,10 @@ export interface ElectronAPI {
     stop: () => Promise<{ success: boolean }>
     status: () => Promise<{ running: boolean; port: number; mediaExportPath: string }>
   }
+  social: {
+    saveWeiboCookie: (rawInput: string) => Promise<SocialSaveWeiboCookieResult>
+    validateWeiboUid: (uid: string) => Promise<SocialValidateWeiboUidResult>
+  }
   insight: {
     testConnection: () => Promise<{ success: boolean; message: string }>
     getTodayStats: () => Promise<Array<{ sessionId: string; count: number; times: string[] }>>
@@ -1191,3 +1209,6 @@ declare global {
 }
 
 export { }
+
+
+
