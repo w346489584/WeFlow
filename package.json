@@ -13,13 +13,13 @@
   },
   "//": "二改不应改变此处的作者与应用信息",
   "scripts": {
-    "postinstall": "electron-builder install-app-deps",
+    "postinstall": "electron-builder install-app-deps && node scripts/prepare-electron-runtime.cjs",
     "rebuild": "electron-rebuild",
-    "dev": "vite",
+    "dev": "node scripts/prepare-electron-runtime.cjs && vite",
     "typecheck": "tsc --noEmit",
     "build": "tsc && vite build && electron-builder",
     "preview": "vite preview",
-    "electron:dev": "vite --mode electron",
+    "electron:dev": "node scripts/prepare-electron-runtime.cjs && vite --mode electron",
     "electron:build": "npm run build"
   },
   "dependencies": {

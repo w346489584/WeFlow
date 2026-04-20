@@ -50,6 +50,8 @@ const INSIGHT_CONFIG_KEYS = new Set([
   'aiModelApiKey',
   'aiModelApiModel',
   'aiModelApiMaxTokens',
+  'aiInsightFilterMode',
+  'aiInsightFilterList',
   'aiInsightAllowSocialContext',
   'aiInsightSocialContextCount',
   'aiInsightWeiboCookie',
@@ -72,6 +74,8 @@ interface SharedAiModelConfig {
   model: string
   maxTokens: number
 }
+
+type InsightFilterMode = 'whitelist' | 'blacklist'
 
 // ─── 日志 ─────────────────────────────────────────────────────────────────────
 
@@ -194,6 +198,11 @@ function normalizeApiMaxTokens(value: unknown): number {
   const numeric = Number(value)
   if (!Number.isFinite(numeric)) return API_MAX_TOKENS_DEFAULT
   return Math.min(API_MAX_TOKENS_MAX, Math.max(API_MAX_TOKENS_MIN, Math.floor(numeric)))
+}
+
+function normalizeSessionIdList(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  return Array.from(new Set(value.map((item) => String(item || '').trim()).filter(Boolean)))
 }
 
 /**
@@ -495,7 +504,7 @@ class InsightService {
         return id && !id.endsWith('@chatroom') && !id.toLowerCase().includes('placeholder') && this.isSessionAllowed(id)
       })
       if (!session) {
-        return { success: false, message: '未找到任何私聊会话（若已启用白名单，请检查是否有勾选的私聊）' }
+        return { success: false, message: '未找到任何可触发的私聊会话（请检查黑白名单模式与选择列表）' }
       }
       const sessionId = session.username?.trim() || ''
       const displayName = session.displayName || sessionId
@@ -747,14 +756,23 @@ ${topMentionText}
 
   /**
    * 判断某个会话是否允许触发见解。
-   * 若白名单未启用，则所有私聊会话均允许；
-   * 若白名单已启用，则只有在白名单中的会话才允许。
+   * white/black 模式二选一：
+   * - whitelist：仅名单内允许
+   * - blacklist：名单内屏蔽，其他允许
    */
+  private getInsightFilterConfig(): { mode: InsightFilterMode; list: string[] } {
+    const modeRaw = String(this.config.get('aiInsightFilterMode') || '').trim().toLowerCase()
+    const mode: InsightFilterMode = modeRaw === 'blacklist' ? 'blacklist' : 'whitelist'
+    const list = normalizeSessionIdList(this.config.get('aiInsightFilterList'))
+    return { mode, list }
+  }
+
   private isSessionAllowed(sessionId: string): boolean {
-    const whitelistEnabled = this.config.get('aiInsightWhitelistEnabled') as boolean
-    if (!whitelistEnabled) return true
-    const whitelist = (this.config.get('aiInsightWhitelist') as string[]) || []
-    return whitelist.includes(sessionId)
+    const normalizedSessionId = String(sessionId || '').trim()
+    if (!normalizedSessionId) return false
+    const { mode, list } = this.getInsightFilterConfig()
+    if (mode === 'whitelist') return list.includes(normalizedSessionId)
+    return !list.includes(normalizedSessionId)
   }
 
   /**
@@ -966,8 +984,8 @@ ${topMentionText}
    * 1. 会话有真正的新消息（lastTimestamp 比上次见到的更新）
    * 2. 该会话距上次活跃分析已超过冷却期
    *
-   * 白名单启用时：直接使用白名单里的 sessionId，完全跳过 getSessions()。
-   * 白名单未启用时：从缓存拉取全量会话后过滤私聊。
+   * whitelist 模式：直接使用名单里的 sessionId，完全跳过 getSessions()。
+   * blacklist 模式：从缓存拉取会话后过滤名单。
    */
   private async analyzeRecentActivity(): Promise<void> {
     if (!this.isEnabled()) return
@@ -978,12 +996,11 @@ ${topMentionText}
       const now = Date.now()
       const cooldownMinutes = (this.config.get('aiInsightCooldownMinutes') as number) ?? 120
       const cooldownMs = cooldownMinutes * 60 * 1000
-      const whitelistEnabled = this.config.get('aiInsightWhitelistEnabled') as boolean
-      const whitelist = (this.config.get('aiInsightWhitelist') as string[]) || []
+      const { mode: filterMode, list: filterList } = this.getInsightFilterConfig()
 
-      // 白名单启用且有勾选项时，直接用白名单 sessionId，无需查数据库全量会话列表。
+      // whitelist 模式且有勾选项时，直接用名单 sessionId，无需查数据库全量会话列表。
       // 通过拉取该会话最新 1 条消息时间戳判断是否真正有新消息，开销极低。
-      if (whitelistEnabled && whitelist.length > 0) {
+      if (filterMode === 'whitelist' && filterList.length > 0) {
         // 确保数据库已连接（首次时连接，之后复用）
         if (!this.dbConnected) {
           const connectResult = await chatService.connect()
@@ -991,8 +1008,8 @@ ${topMentionText}
           this.dbConnected = true
         }
 
-        for (const sessionId of whitelist) {
-          if (!sessionId || sessionId.endsWith('@chatroom')) continue
+        for (const sessionId of filterList) {
+          if (!sessionId || sessionId.toLowerCase().includes('placeholder')) continue
 
           // 冷却期检查（先过滤，减少不必要的 DB 查询）
           if (cooldownMs > 0) {
@@ -1029,16 +1046,22 @@ ${topMentionText}
         return
       }
 
-      // 白名单未启用：需要拉取全量会话列表，从中过滤私聊
+      if (filterMode === 'whitelist' && filterList.length === 0) {
+        insightLog('INFO', '白名单模式且名单为空，跳过活跃分析')
+        return
+      }
+
+      // blacklist 模式：拉取会话缓存后按过滤规则筛选
       const sessions = await this.getSessionsCached()
       if (sessions.length === 0) return
 
-      const privateSessions = sessions.filter((s) => {
+      const candidateSessions = sessions.filter((s) => {
         const id = s.username?.trim() || ''
-        return id && !id.endsWith('@chatroom') && !id.toLowerCase().includes('placeholder')
+        if (!id || id.toLowerCase().includes('placeholder')) return false
+        return this.isSessionAllowed(id)
       })
 
-      for (const session of privateSessions.slice(0, 10)) {
+      for (const session of candidateSessions.slice(0, 10)) {
         const sessionId = session.username?.trim() || ''
         if (!sessionId) continue
 

@@ -412,6 +412,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     generateReport: (year: number) => ipcRenderer.invoke('annualReport:generateReport', year),
     exportImages: (payload: { baseDir: string; folderName: string; images: Array<{ name: string; dataUrl: string }> }) =>
       ipcRenderer.invoke('annualReport:exportImages', payload),
+    captureCurrentWindow: () => ipcRenderer.invoke('annualReport:captureCurrentWindow'),
     onAvailableYearsProgress: (callback: (payload: {
       taskId: string
       years?: number[]

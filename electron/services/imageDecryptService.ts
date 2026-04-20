@@ -104,8 +104,6 @@ export class ImageDecryptService {
     const timestamp = new Date().toISOString()
     const metaStr = meta ? ` ${JSON.stringify(meta)}` : ''
     const logLine = `[${timestamp}] [ImageDecrypt] ${message}${metaStr}\n`
-
-    // 只写入文件，不输出到控制台
     this.writeLog(logLine)
   }
 
@@ -115,11 +113,7 @@ export class ImageDecryptService {
     const errorStr = error ? ` Error: ${String(error)}` : ''
     const metaStr = meta ? ` ${JSON.stringify(meta)}` : ''
     const logLine = `[${timestamp}] [ImageDecrypt] ERROR: ${message}${errorStr}${metaStr}\n`
-
-    // 同时输出到控制台
     console.error(message, error, meta)
-
-    // 写入日志文件
     this.writeLog(logLine)
   }
 
@@ -143,7 +137,7 @@ export class ImageDecryptService {
     }
     for (const key of cacheKeys) {
       const cached = this.resolvedCache.get(key)
-      if (cached && existsSync(cached) && this.isImageFile(cached)) {
+      if (cached && existsSync(cached) && this.isUsableImageCacheFile(cached)) {
         const upgraded = !this.isHdPath(cached)
           ? await this.tryPromoteThumbnailCache(payload, key, cached)
           : null
@@ -161,7 +155,7 @@ export class ImageDecryptService {
         this.emitCacheResolved(payload, key, this.resolveEmitPath(finalPath, payload.preferFilePath))
         return { success: true, localPath, hasUpdate }
       }
-      if (cached && !this.isImageFile(cached)) {
+      if (cached && !this.isUsableImageCacheFile(cached)) {
         this.resolvedCache.delete(key)
       }
     }
@@ -219,7 +213,7 @@ export class ImageDecryptService {
     if (payload.force) {
       for (const key of cacheKeys) {
         const cached = this.resolvedCache.get(key)
-        if (cached && existsSync(cached) && this.isImageFile(cached) && this.isHdPath(cached)) {
+        if (cached && existsSync(cached) && this.isUsableImageCacheFile(cached) && this.isHdPath(cached)) {
           this.cacheResolvedPaths(cacheKey, payload.imageMd5, payload.imageDatName, cached)
           this.clearUpdateFlags(cacheKey, payload.imageMd5, payload.imageDatName)
           const localPath = this.resolveLocalPathForPayload(cached, payload.preferFilePath)
@@ -227,7 +221,7 @@ export class ImageDecryptService {
           this.emitDecryptProgress(payload, cacheKey, 'done', 100, 'done')
           return { success: true, localPath }
         }
-        if (cached && !this.isImageFile(cached)) {
+        if (cached && !this.isUsableImageCacheFile(cached)) {
           this.resolvedCache.delete(key)
         }
       }
@@ -236,7 +230,7 @@ export class ImageDecryptService {
 
     if (!payload.force) {
       const cached = this.resolvedCache.get(cacheKey)
-      if (cached && existsSync(cached) && this.isImageFile(cached)) {
+      if (cached && existsSync(cached) && this.isUsableImageCacheFile(cached)) {
         const upgraded = !this.isHdPath(cached)
           ? await this.tryPromoteThumbnailCache(payload, cacheKey, cached)
           : null
@@ -246,7 +240,7 @@ export class ImageDecryptService {
         this.emitDecryptProgress(payload, cacheKey, 'done', 100, 'done')
         return { success: true, localPath }
       }
-      if (cached && !this.isImageFile(cached)) {
+      if (cached && !this.isUsableImageCacheFile(cached)) {
         this.resolvedCache.delete(cacheKey)
       }
     }
@@ -1404,7 +1398,8 @@ export class ImageDecryptService {
   private findCachedOutputByDatPath(datPath: string, sessionId?: string, preferHd = false): string | null {
     const candidates = this.buildCacheOutputCandidatesFromDat(datPath, sessionId, preferHd)
     for (const candidate of candidates) {
-      if (existsSync(candidate)) return candidate
+      if (!existsSync(candidate)) continue
+      if (this.isUsableImageCacheFile(candidate)) return candidate
     }
     return null
   }
@@ -1630,6 +1625,73 @@ export class ImageDecryptService {
     return ext === '.gif' || ext === '.png' || ext === '.jpg' || ext === '.jpeg' || ext === '.webp'
   }
 
+  private isUsableImageCacheFile(filePath: string): boolean {
+    if (!this.isImageFile(filePath)) return false
+    if (!existsSync(filePath)) return false
+    if (this.isLikelyCorruptedDecodedImage(filePath)) {
+      this.logInfo('[ImageDecrypt] 跳过疑似损坏缓存文件', { filePath })
+      void rm(filePath, { force: true }).catch(() => { })
+      return false
+    }
+    return true
+  }
+
+  private isLikelyCorruptedDecodedImage(filePath: string): boolean {
+    try {
+      const ext = extname(filePath).toLowerCase()
+      if (ext !== '.jpg' && ext !== '.jpeg') return false
+      const data = readFileSync(filePath)
+      return this.isLikelyCorruptedJpegBuffer(data)
+    } catch {
+      return false
+    }
+  }
+
+  private isLikelyCorruptedJpegBuffer(data: Buffer): boolean {
+    if (data.length < 4096) return false
+    let zeroCount = 0
+    for (let i = 0; i < data.length; i += 1) {
+      if (data[i] === 0x00) zeroCount += 1
+    }
+    const zeroRatio = zeroCount / data.length
+    if (zeroRatio >= 0.985) return true
+
+    const hasLavcTag = data.length >= 24 && data.subarray(0, 24).includes(Buffer.from('Lavc'))
+    if (!hasLavcTag) return false
+
+    // JPEG 扫描段若几乎全是 0，通常表示解码失败但被编码器强行输出。
+    let sosPos = -1
+    for (let i = 2; i < data.length - 1; i += 1) {
+      if (data[i] === 0xff && data[i + 1] === 0xda) {
+        sosPos = i
+        break
+      }
+    }
+    if (sosPos < 0 || sosPos + 4 >= data.length) return zeroRatio >= 0.95
+
+    const sosLength = (data[sosPos + 2] << 8) | data[sosPos + 3]
+    const scanStart = sosPos + 2 + sosLength
+    if (scanStart >= data.length - 2) return zeroRatio >= 0.95
+
+    let eoiPos = -1
+    for (let i = data.length - 2; i >= scanStart; i -= 1) {
+      if (data[i] === 0xff && data[i + 1] === 0xd9) {
+        eoiPos = i
+        break
+      }
+    }
+    if (eoiPos < 0 || eoiPos <= scanStart) return zeroRatio >= 0.95
+
+    const scanData = data.subarray(scanStart, eoiPos)
+    if (scanData.length < 1024) return zeroRatio >= 0.95
+    let scanZeroCount = 0
+    for (let i = 0; i < scanData.length; i += 1) {
+      if (scanData[i] === 0x00) scanZeroCount += 1
+    }
+    const scanZeroRatio = scanZeroCount / scanData.length
+    return scanZeroRatio >= 0.985
+  }
+
   /**
    * 解包 wxgf 格式
    * wxgf 是微信的图片格式，内部使用 HEVC 编码
@@ -1653,41 +1715,96 @@ export class ImageDecryptService {
       }
     }
 
-    // 提取 HEVC NALU 裸流
-    const hevcData = this.extractHevcNalu(buffer)
-    // 优先用提取的 NALU 裸流，提取失败则跳过 wxgf 头部直接用原始数据
-    const feedData = (hevcData && hevcData.length >= 100) ? hevcData : buffer.subarray(4)
+    const hevcCandidates = this.buildWxgfHevcCandidates(buffer)
     this.logInfo('unwrapWxgf: 准备 ffmpeg 转换', {
-      naluExtracted: !!(hevcData && hevcData.length >= 100),
-      feedSize: feedData.length
+      candidateCount: hevcCandidates.length,
+      candidates: hevcCandidates.map((item) => `${item.name}:${item.data.length}`)
     })
 
-    // 尝试用 ffmpeg 转换
-    try {
-      const jpgData = await this.convertHevcToJpg(feedData)
-      if (jpgData && jpgData.length > 0) {
+    for (const candidate of hevcCandidates) {
+      try {
+        const jpgData = await this.convertHevcToJpg(candidate.data)
+        if (!jpgData || jpgData.length === 0) continue
         return { data: jpgData, isWxgf: false }
+      } catch (e) {
+        this.logError('unwrapWxgf: 候选流转换失败', e, { candidate: candidate.name })
       }
-    } catch (e) {
-      this.logError('unwrapWxgf: ffmpeg 转换失败', e)
     }
 
-    return { data: feedData, isWxgf: true }
+    const fallback = hevcCandidates[0]?.data || buffer.subarray(4)
+    return { data: fallback, isWxgf: true }
   }
 
-  /**
-   * 从 wxgf 数据中提取 HEVC NALU 裸流
-   */
-  private extractHevcNalu(buffer: Buffer): Buffer | null {
+  private buildWxgfHevcCandidates(buffer: Buffer): Array<{ name: string; data: Buffer }> {
+    const units = this.extractHevcNaluUnits(buffer)
+    const candidates: Array<{ name: string; data: Buffer }> = []
+
+    const addCandidate = (name: string, data: Buffer | null | undefined): void => {
+      if (!data || data.length < 100) return
+      if (candidates.some((item) => item.data.equals(data))) return
+      candidates.push({ name, data })
+    }
+
+    // 1) 优先尝试按 VPS(32) 分组后的候选流
+    const vpsStarts: number[] = []
+    for (let i = 0; i < units.length; i += 1) {
+      const unit = units[i]
+      if (!unit || unit.length < 2) continue
+      const type = (unit[0] >> 1) & 0x3f
+      if (type === 32) vpsStarts.push(i)
+    }
+    const groups: Array<{ index: number; data: Buffer; size: number }> = []
+    for (let i = 0; i < vpsStarts.length; i += 1) {
+      const start = vpsStarts[i]
+      const end = i + 1 < vpsStarts.length ? vpsStarts[i + 1] : units.length
+      const groupUnits = units.slice(start, end)
+      if (groupUnits.length === 0) continue
+      let hasVcl = false
+      for (const unit of groupUnits) {
+        if (!unit || unit.length < 2) continue
+        const type = (unit[0] >> 1) & 0x3f
+        if (type === 19 || type === 20 || type === 1) {
+          hasVcl = true
+          break
+        }
+      }
+      if (!hasVcl) continue
+      const merged = this.mergeHevcNaluUnits(groupUnits)
+      groups.push({ index: i, data: merged, size: merged.length })
+    }
+    groups.sort((a, b) => b.size - a.size)
+    for (const group of groups) {
+      addCandidate(`group_${group.index}`, group.data)
+    }
+
+    // 2) 全量扫描提取流
+    addCandidate('scan_all_nalus', this.mergeHevcNaluUnits(units))
+
+    // 3) 兜底：直接跳过 wxgf 头喂 ffmpeg
+    addCandidate('raw_skip4', buffer.subarray(4))
+
+    return candidates
+  }
+
+  private mergeHevcNaluUnits(units: Buffer[]): Buffer {
+    if (!Array.isArray(units) || units.length === 0) return Buffer.alloc(0)
+    const merged: Buffer[] = []
+    for (const unit of units) {
+      if (!unit || unit.length < 2) continue
+      merged.push(Buffer.from([0x00, 0x00, 0x00, 0x01]))
+      merged.push(unit)
+    }
+    return Buffer.concat(merged)
+  }
+
+  private extractHevcNaluUnits(buffer: Buffer): Buffer[] {
     const starts: number[] = []
     let i = 4
-
     while (i < buffer.length - 3) {
       const hasPrefix4 = buffer[i] === 0x00 && buffer[i + 1] === 0x00 &&
         buffer[i + 2] === 0x00 && buffer[i + 3] === 0x01
       const hasPrefix3 = buffer[i] === 0x00 && buffer[i + 1] === 0x00 &&
         buffer[i + 2] === 0x01
-
       if (hasPrefix4 || hasPrefix3) {
         starts.push(i)
         i += hasPrefix4 ? 4 : 3
@@ -1695,10 +1812,11 @@ export class ImageDecryptService {
       }
       i += 1
     }
+    if (starts.length === 0) return []
 
-    if (starts.length === 0) return null
-
-    const nalUnits: Buffer[] = []
+    const units: Buffer[] = []
+    let keptUnits = 0
+    let droppedUnits = 0
     for (let index = 0; index < starts.length; index += 1) {
       const start = starts[index]
       const end = index + 1 < starts.length ? starts[index + 1] : buffer.length
@@ -1707,12 +1825,29 @@ export class ImageDecryptService {
       const prefixLength = hasPrefix4 ? 4 : 3
       const payloadStart = start + prefixLength
       if (payloadStart >= end) continue
-      nalUnits.push(Buffer.from([0x00, 0x00, 0x00, 0x01]))
-      nalUnits.push(buffer.subarray(payloadStart, end))
+      const payload = buffer.subarray(payloadStart, end)
+      if (payload.length < 2) {
+        droppedUnits += 1
+        continue
+      }
+      if ((payload[0] & 0x80) !== 0) {
+        droppedUnits += 1
+        continue
+      }
+      units.push(payload)
+      keptUnits += 1
     }
+    return units
+  }
 
-    if (nalUnits.length === 0) return null
-    return Buffer.concat(nalUnits)
+  /**
+   * 从 wxgf 数据中提取 HEVC NALU 裸流
+   */
+  private extractHevcNalu(buffer: Buffer): Buffer | null {
+    const units = this.extractHevcNaluUnits(buffer)
+    if (units.length === 0) return null
+    const merged = this.mergeHevcNaluUnits(units)
+    return merged.length > 0 ? merged : null
   }
 
   /**
@@ -1747,18 +1882,26 @@ export class ImageDecryptService {
       await writeFile(tmpInput, hevcData)
 
       // 依次尝试: 1) -f hevc 裸流  2) 不指定格式让 ffmpeg 自动检测
-      const attempts: { label: string; inputArgs: string[] }[] = [
-        { label: 'hevc raw', inputArgs: ['-f', 'hevc', '-i', tmpInput] },
-        { label: 'h265 raw', inputArgs: ['-f', 'h265', '-i', tmpInput] },
-        { label: 'auto detect', inputArgs: ['-i', tmpInput] },
+      const attempts: { label: string; inputArgs: string[]; outputArgs?: string[] }[] = [
+        { label: 'hevc raw frame0', inputArgs: ['-f', 'hevc', '-i', tmpInput] },
+        { label: 'hevc raw frame1', inputArgs: ['-f', 'hevc', '-i', tmpInput], outputArgs: ['-vf', 'select=eq(n\\,1)'] },
+        { label: 'hevc raw frame5', inputArgs: ['-f', 'hevc', '-i', tmpInput], outputArgs: ['-vf', 'select=eq(n\\,5)'] },
+        { label: 'h265 raw frame0', inputArgs: ['-f', 'h265', '-i', tmpInput] },
+        { label: 'h265 raw frame1', inputArgs: ['-f', 'h265', '-i', tmpInput], outputArgs: ['-vf', 'select=eq(n\\,1)'] },
+        { label: 'h265 raw frame5', inputArgs: ['-f', 'h265', '-i', tmpInput], outputArgs: ['-vf', 'select=eq(n\\,5)'] },
+        { label: 'auto detect frame0', inputArgs: ['-i', tmpInput] },
+        { label: 'auto detect frame1', inputArgs: ['-i', tmpInput], outputArgs: ['-vf', 'select=eq(n\\,1)'] },
+        { label: 'auto detect frame5', inputArgs: ['-i', tmpInput], outputArgs: ['-vf', 'select=eq(n\\,5)'] },
       ]
 
       for (const attempt of attempts) {
         // 清理上一轮的输出
         try { if (existsSync(tmpOutput)) require('fs').unlinkSync(tmpOutput) } catch {}
 
-        const result = await this.runFfmpegConvert(ffmpeg, attempt.inputArgs, tmpOutput, attempt.label)
-        if (result) return result
+        const result = await this.runFfmpegConvert(ffmpeg, attempt.inputArgs, tmpOutput, attempt.label, attempt.outputArgs)
+        if (!result) continue
+        if (this.isLikelyCorruptedJpegBuffer(result)) continue
+        return result
       }
 
       return null
@@ -1771,7 +1914,13 @@ export class ImageDecryptService {
     }
   }
 
-  private runFfmpegConvert(ffmpeg: string, inputArgs: string[], tmpOutput: string, label: string): Promise<Buffer | null> {
+  private runFfmpegConvert(
+    ffmpeg: string,
+    inputArgs: string[],
+    tmpOutput: string,
+    label: string,
+    outputArgs?: string[]
+  ): Promise<Buffer | null> {
     return new Promise((resolve) => {
       const { spawn } = require('child_process')
       const errChunks: Buffer[] = []
@@ -1780,6 +1929,7 @@ export class ImageDecryptService {
         '-hide_banner', '-loglevel', 'error',
         '-y',
         ...inputArgs,
+        ...(outputArgs || []),
         '-vframes', '1', '-q:v', '2', '-f', 'image2', tmpOutput
       ]
       this.logInfo(`ffmpeg 尝试 [${label}]`, { args: args.join(' ') })

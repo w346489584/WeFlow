@@ -59,6 +59,8 @@ export interface AnnualReportData {
     initiatedChats: number
     receivedChats: number
     initiativeRate: number
+    topInitiatedFriend?: string
+    topInitiatedCount?: number
   } | null
   responseSpeed: {
     avgResponseTime: number
@@ -1190,7 +1192,9 @@ class AnnualReportService {
         topLiked: { username: string; displayName: string; avatarUrl?: string; count: number }[]
       } | undefined
 
-      const snsStats = await wcdbService.getSnsAnnualStats(actualStartTime, actualEndTime)
+      const snsBeginTime = isAllTime ? 0 : actualStartTime
+      const snsEndTime = isAllTime ? Math.floor(Date.now() / 1000) : actualEndTime
+      const snsStats = await wcdbService.getSnsAnnualStats(snsBeginTime, snsEndTime)
 
       if (snsStats.success && snsStats.data) {
         const d = snsStats.data
@@ -1214,6 +1218,20 @@ class AnnualReportService {
           typeCounts: d.typeCounts,
           topLikers: (d.topLikers || []).map((u: any) => ({ ...u, ...getSnsUserInfo(u.username) })),
           topLiked: (d.topLiked || []).map((u: any) => ({ ...u, ...getSnsUserInfo(u.username) }))
+        }
+      }
+
+      // ALL YEARS 兼容：部分底层实现 begin/end 为 0 时会返回 0，兜底使用导出统计总数。
+      if (isAllTime && (!snsStatsResult || Number(snsStatsResult.totalPosts || 0) <= 0)) {
+        const snsExportStats = await wcdbService.getSnsExportStats(cleanedWxid || rawWxid)
+        if (snsExportStats.success && snsExportStats.data) {
+          const fallbackTotalPosts = Math.max(0, Number(snsExportStats.data.totalPosts || 0))
+          snsStatsResult = {
+            totalPosts: fallbackTotalPosts,
+            typeCounts: snsStatsResult?.typeCounts,
+            topLikers: snsStatsResult?.topLikers || [],
+            topLiked: snsStatsResult?.topLiked || []
+          }
         }
       }
 
@@ -1346,16 +1364,27 @@ class AnnualReportService {
       let socialInitiative: AnnualReportData['socialInitiative'] = null
       let totalInitiated = 0
       let totalReceived = 0
-      for (const stats of conversationStarts.values()) {
+      let topInitiatedSessionId = ''
+      let topInitiatedCount = 0
+      for (const [sessionId, stats] of conversationStarts.entries()) {
         totalInitiated += stats.initiated
         totalReceived += stats.received
+        if (stats.initiated > topInitiatedCount) {
+          topInitiatedCount = stats.initiated
+          topInitiatedSessionId = sessionId
+        }
       }
       const totalConversations = totalInitiated + totalReceived
       if (totalConversations > 0) {
+        const topInitiatedInfo = topInitiatedSessionId ? contactInfoMap.get(topInitiatedSessionId) : null
         socialInitiative = {
           initiatedChats: totalInitiated,
           receivedChats: totalReceived,
-          initiativeRate: Math.round((totalInitiated / totalConversations) * 1000) / 10
+          initiativeRate: Math.round((totalInitiated / totalConversations) * 1000) / 10,
+          topInitiatedFriend: topInitiatedCount > 0
+            ? (topInitiatedInfo?.displayName || topInitiatedSessionId)
+            : undefined,
+          topInitiatedCount: topInitiatedCount > 0 ? topInitiatedCount : undefined
         }
       }
 

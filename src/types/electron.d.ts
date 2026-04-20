@@ -849,6 +849,8 @@ export interface ElectronAPI {
           initiatedChats: number
           receivedChats: number
           initiativeRate: number
+          topInitiatedFriend?: string
+          topInitiatedCount?: number
         } | null
         responseSpeed: {
           avgResponseTime: number
@@ -879,6 +881,12 @@ export interface ElectronAPI {
     exportImages: (payload: { baseDir: string; folderName: string; images: Array<{ name: string; dataUrl: string }> }) => Promise<{
       success: boolean
       dir?: string
+      error?: string
+    }>
+    captureCurrentWindow: () => Promise<{
+      success: boolean
+      dataUrl?: string
+      size?: { width: number; height: number }
       error?: string
     }>
     onAvailableYearsProgress: (callback: (payload: {

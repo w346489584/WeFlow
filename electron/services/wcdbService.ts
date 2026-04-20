@@ -25,9 +25,7 @@ export class WcdbService {
   private logEnabled = false
   private monitorListener: ((type: string, json: string) => void) | null = null
 
-  constructor() {
-    this.initWorker()
-  }
+  constructor() {}
 
   /**
    * 初始化 Worker 线程

@@ -97,6 +97,8 @@ export const CONFIG_KEYS = {
   AI_INSIGHT_SILENCE_DAYS: 'aiInsightSilenceDays',
   AI_INSIGHT_ALLOW_CONTEXT: 'aiInsightAllowContext',
   AI_INSIGHT_ALLOW_SOCIAL_CONTEXT: 'aiInsightAllowSocialContext',
+  AI_INSIGHT_FILTER_MODE: 'aiInsightFilterMode',
+  AI_INSIGHT_FILTER_LIST: 'aiInsightFilterList',
   AI_INSIGHT_WHITELIST_ENABLED: 'aiInsightWhitelistEnabled',
   AI_INSIGHT_WHITELIST: 'aiInsightWhitelist',
   AI_INSIGHT_COOLDOWN_MINUTES: 'aiInsightCooldownMinutes',
@@ -1917,22 +1919,49 @@ export async function setAiInsightAllowSocialContext(allow: boolean): Promise<vo
   await config.set(CONFIG_KEYS.AI_INSIGHT_ALLOW_SOCIAL_CONTEXT, allow)
 }
 
+export type AiInsightFilterMode = 'whitelist' | 'blacklist'
+
+const normalizeAiInsightFilterList = (value: unknown): string[] => {
+  if (!Array.isArray(value)) return []
+  return Array.from(new Set(value.map((item) => String(item || '').trim()).filter(Boolean)))
+}
+
+export async function getAiInsightFilterMode(): Promise<AiInsightFilterMode> {
+  const value = await config.get(CONFIG_KEYS.AI_INSIGHT_FILTER_MODE)
+  if (value === 'blacklist') return 'blacklist'
+  if (value === 'whitelist') return 'whitelist'
+  return 'whitelist'
+}
+
+export async function setAiInsightFilterMode(mode: AiInsightFilterMode): Promise<void> {
+  const normalizedMode: AiInsightFilterMode = mode === 'blacklist' ? 'blacklist' : 'whitelist'
+  await config.set(CONFIG_KEYS.AI_INSIGHT_FILTER_MODE, normalizedMode)
+}
+
+export async function getAiInsightFilterList(): Promise<string[]> {
+  const value = await config.get(CONFIG_KEYS.AI_INSIGHT_FILTER_LIST)
+  return normalizeAiInsightFilterList(value)
+}
+
+export async function setAiInsightFilterList(list: string[]): Promise<void> {
+  await config.set(CONFIG_KEYS.AI_INSIGHT_FILTER_LIST, normalizeAiInsightFilterList(list))
+}
+
+// 兼容旧字段命名：内部已映射到新的黑白名单模式
 export async function getAiInsightWhitelistEnabled(): Promise<boolean> {
-  const value = await config.get(CONFIG_KEYS.AI_INSIGHT_WHITELIST_ENABLED)
-  return value === true
+  return (await getAiInsightFilterMode()) === 'whitelist'
 }
 
 export async function setAiInsightWhitelistEnabled(enabled: boolean): Promise<void> {
-  await config.set(CONFIG_KEYS.AI_INSIGHT_WHITELIST_ENABLED, enabled)
+  await setAiInsightFilterMode(enabled ? 'whitelist' : 'blacklist')
 }
 
 export async function getAiInsightWhitelist(): Promise<string[]> {
-  const value = await config.get(CONFIG_KEYS.AI_INSIGHT_WHITELIST)
-  return Array.isArray(value) ? (value as string[]) : []
+  return getAiInsightFilterList()
 }
 
 export async function setAiInsightWhitelist(list: string[]): Promise<void> {
-  await config.set(CONFIG_KEYS.AI_INSIGHT_WHITELIST, list)
+  await setAiInsightFilterList(list)
 }
 
 export async function getAiInsightCooldownMinutes(): Promise<number> {

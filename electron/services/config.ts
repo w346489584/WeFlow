@@ -85,6 +85,8 @@ interface ConfigSchema {
   aiInsightSilenceDays: number
   aiInsightAllowContext: boolean
   aiInsightAllowSocialContext: boolean
+  aiInsightFilterMode: 'whitelist' | 'blacklist'
+  aiInsightFilterList: string[]
   aiInsightWhitelistEnabled: boolean
   aiInsightWhitelist: string[]
   /** 活跃分析冷却时间（分钟），0 表示无冷却 */
@@ -202,6 +204,8 @@ export class ConfigService {
       aiInsightSilenceDays: 3,
       aiInsightAllowContext: false,
       aiInsightAllowSocialContext: false,
+      aiInsightFilterMode: 'whitelist',
+      aiInsightFilterList: [],
       aiInsightWhitelistEnabled: false,
       aiInsightWhitelist: [],
       aiInsightCooldownMinutes: 120,

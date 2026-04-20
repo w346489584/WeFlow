@@ -1898,6 +1898,9 @@ const TaskCenterModal = memo(function TaskCenterModal({
                 const mediaCacheMetricLabel = mediaCacheTotal > 0
                   ? `缓存命中 ${mediaCacheHitFiles}/${mediaCacheTotal}`
                   : ''
+                const mediaMissMetricLabel = mediaCacheMissFiles > 0
+                  ? `未导出 ${mediaCacheMissFiles} 个文件/媒体`
+                  : ''
                 const mediaDedupMetricLabel = mediaDedupReuseFiles > 0
                   ? `复用 ${mediaDedupReuseFiles}`
                   : ''
@@ -1958,6 +1961,7 @@ const TaskCenterModal = memo(function TaskCenterModal({
                             {phaseMetricLabel ? ` · ${phaseMetricLabel}` : ''}
                             {mediaLiveMetricLabel ? ` · ${mediaLiveMetricLabel}` : ''}
                             {mediaCacheMetricLabel ? ` · ${mediaCacheMetricLabel}` : ''}
+                            {mediaMissMetricLabel ? ` · ${mediaMissMetricLabel}` : ''}
                             {mediaDedupMetricLabel ? ` · ${mediaDedupMetricLabel}` : ''}
                             {task.status === 'running' && currentSessionRatio !== null
                               ? `（当前会话 ${Math.round(currentSessionRatio * 100)}%）`

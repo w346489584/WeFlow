@@ -3555,6 +3555,24 @@ function registerIpcHandlers() {
     }
   })
 
+  ipcMain.handle('annualReport:captureCurrentWindow', async (event) => {
+    try {
+      const win = BrowserWindow.fromWebContents(event.sender)
+      if (!win || win.isDestroyed()) {
+        return { success: false, error: '窗口不可用' }
+      }
+
+      const image = await win.webContents.capturePage()
+      return {
+        success: true,
+        dataUrl: image.toDataURL(),
+        size: image.getSize()
+      }
+    } catch (e) {
+      return { success: false, error: String(e) }
+    }
+  })
+
   // 密钥获取
   ipcMain.handle('key:autoGetDbKey', async (event) => {
     return keyService.autoGetDbKey(180_000, (message: string, level: number) => {
