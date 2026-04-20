@@ -105,9 +105,13 @@ jobs:
       - name: Package macOS arm64 dev artifacts
         shell: bash
         run: |
+          set -euo pipefail
           export ELECTRON_BUILDER_BINARIES_MIRROR="https://github.com/electron-userland/electron-builder-binaries/releases/download/"
           echo "Using ELECTRON_BUILDER_BINARIES_MIRROR=$ELECTRON_BUILDER_BINARIES_MIRROR"
-          npx electron-builder --mac dmg zip --arm64 --publish never '--config.publish.channel=dev' '--config.artifactName=${productName}-dev-arm64.${ext}'
+          if ! npx electron-builder --mac dmg zip --arm64 --publish never '--config.publish.channel=dev' '--config.artifactName=${productName}-dev-arm64.${ext}'; then
+            echo "::warning::DMG packaging failed (hdiutil instability on runner). Retrying with ZIP only."
+            npx electron-builder --mac zip --arm64 --publish never '--config.publish.channel=dev' '--config.artifactName=${productName}-dev-arm64.${ext}'
+          fi
 
       - name: Upload macOS arm64 assets to fixed release
         env:
@@ -314,6 +318,9 @@ jobs:
           WINDOWS_ASSET="$(pick_asset "dev-x64-Setup[.]exe$")"
           WINDOWS_ARM64_ASSET="$(pick_asset "dev-arm64-Setup[.]exe$")"
           MAC_ASSET="$(pick_asset "dev-arm64[.]dmg$")"
+          if [ -z "$MAC_ASSET" ]; then
+            MAC_ASSET="$(pick_asset "dev-arm64[.]zip$")"
+          fi
           LINUX_TAR_ASSET="$(pick_asset "dev-linux[.]tar[.]gz$")"
           LINUX_APPIMAGE_ASSET="$(pick_asset "dev-linux[.]AppImage$")"
 

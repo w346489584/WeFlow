@@ -134,9 +134,13 @@ jobs:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
         shell: bash
         run: |
+          set -euo pipefail
           export ELECTRON_BUILDER_BINARIES_MIRROR="https://github.com/electron-userland/electron-builder-binaries/releases/download/"
           echo "Using ELECTRON_BUILDER_BINARIES_MIRROR=$ELECTRON_BUILDER_BINARIES_MIRROR"
-          npx electron-builder --mac dmg zip --arm64 --publish never '--config.publish.channel=preview' '--config.artifactName=${productName}-preview-arm64.${ext}'
+          if ! npx electron-builder --mac dmg zip --arm64 --publish never '--config.publish.channel=preview' '--config.artifactName=${productName}-preview-arm64.${ext}'; then
+            echo "::warning::DMG packaging failed (hdiutil instability on runner). Retrying with ZIP only."
+            npx electron-builder --mac zip --arm64 --publish never '--config.publish.channel=preview' '--config.artifactName=${productName}-preview-arm64.${ext}'
+          fi
 
       - name: Upload macOS arm64 assets to fixed preview release
         env:
@@ -359,6 +363,9 @@ jobs:
           fi
           WINDOWS_ARM64_ASSET="$(pick_asset "arm64.*[.]exe$")"
           MAC_ASSET="$(pick_asset "[.]dmg$")"
+          if [ -z "$MAC_ASSET" ]; then
+            MAC_ASSET="$(pick_asset "[.]zip$")"
+          fi
           LINUX_TAR_ASSET="$(pick_asset "[.]tar[.]gz$")"
           LINUX_APPIMAGE_ASSET="$(pick_asset "[.]AppImage$")"
 
