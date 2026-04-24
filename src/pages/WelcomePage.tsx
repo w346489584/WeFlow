@@ -14,6 +14,7 @@ import './WelcomePage.scss'
 const isMac = navigator.userAgent.toLowerCase().includes('mac')
 const isLinux = navigator.userAgent.toLowerCase().includes('linux')
 const isWindows = !isMac && !isLinux
+const MAC_KEY_FAQ_URL = 'https://github.com/hicccc77/WeFlow/blob/main/docs/MAC-KEY-FAQ.md'
 
 const DB_PATH_CHINESE_ERROR = '路径包含中文字符，迁移至全英文目录后再试'
 const dbPathPlaceholder = isMac
@@ -39,10 +40,19 @@ interface WelcomePageProps {
 
 const formatDbKeyFailureMessage = (error?: string, logs?: string[]): string => {
   const base = String(error || '自动获取密钥失败').trim()
+  const isInternalLine = (line: string): boolean => {
+    const lower = line.toLowerCase()
+    return lower.includes('xkey_helper')
+      || lower.includes('[debug]')
+      || lower.includes('breakpoint')
+      || lower.includes('hook installed @')
+      || lower.includes('scanner ')
+  }
   const tailLogs = Array.isArray(logs)
     ? logs
       .map(item => String(item || '').trim())
-      .filter(Boolean)
+      .filter(item => Boolean(item) && !isInternalLine(item))
+      .map(item => item.length > 80 ? `${item.slice(0, 80)}...` : item)
       .slice(-6)
     : []
   if (tailLogs.length === 0) return base
@@ -117,6 +127,7 @@ function WelcomePage({ standalone = false }: WelcomePageProps) {
   const [isImageStepAutoCompleted, setIsImageStepAutoCompleted] = useState(false)
   const [hasReacquiredDbKey, setHasReacquiredDbKey] = useState(!isAddAccountMode)
   const [showDbKeyConfirm, setShowDbKeyConfirm] = useState(false)
+  const [lastDbKeyError, setLastDbKeyError] = useState('')
   const imagePrefetchAttemptRef = useRef<string>('')
 
   // 安全相关 state
@@ -476,6 +487,7 @@ function WelcomePage({ standalone = false }: WelcomePageProps) {
     setShowDbKeyConfirm(false)
     setIsFetchingDbKey(true)
     setError('')
+    setLastDbKeyError('')
     setIsManualStartPrompt(false)
     setDbKeyStatus('正在连接微信进程...')
     try {
@@ -499,18 +511,27 @@ function WelcomePage({ standalone = false }: WelcomePageProps) {
         ) {
           setIsManualStartPrompt(true)
           setDbKeyStatus('需要手动启动微信')
+          setLastDbKeyError('')
         } else {
           if (result.error?.includes('尚未完成登录')) {
             setDbKeyStatus('请先在微信完成登录后重试')
           }
-          setError(formatDbKeyFailureMessage(result.error, result.logs))
+          const failureMessage = formatDbKeyFailureMessage(result.error, result.logs)
+          setError(failureMessage)
+          setLastDbKeyError(failureMessage)
         }
       }
     } catch (e) {
-      setError(`自动获取密钥失败: ${e}`)
+      const failureMessage = `自动获取密钥失败: ${e}`
+      setError(failureMessage)
+      setLastDbKeyError(failureMessage)
     } finally {
       setIsFetchingDbKey(false)
     }
+  }
+
+  const openMacKeyFaq = () => {
+    void window.electronAPI.shell.openExternal(MAC_KEY_FAQ_URL)
   }
 
   const handleManualConfirm = async () => {
@@ -1161,7 +1182,16 @@ function WelcomePage({ standalone = false }: WelcomePageProps) {
             )}
           </div>
 
-          {error && <div className="error-message">{error}</div>}
+          {error && (
+            <div className="error-message">
+              <div className="error-text">{error}</div>
+              {isMac && error === lastDbKeyError && (
+                <button type="button" className="error-link-btn" onClick={openMacKeyFaq}>
+                  查看 macOS 获取密钥排障指引
+                </button>
+              )}
+            </div>
+          )}
 
           {currentStep.id === 'intro' && (
             <div className="intro-footer">

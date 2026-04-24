@@ -24,6 +24,9 @@ export class KeyServiceMac {
   private machVmReadOverwrite: any = null
   private machPortDeallocate: any = null
   private _needsElevation = false
+  private restrictedFailureCount = 0
+  private restrictedFailureAt = 0
+  private readonly restrictedFailureWindowMs = 8 * 60_000
 
   private getHelperPath(): string {
     const isPackaged = app.isPackaged
@@ -186,18 +189,25 @@ export class KeyServiceMac {
       }
 
       if (!parsed.success) {
-        const errorMsg = this.mapDbKeyErrorMessage(parsed.code, parsed.detail)
+        const errorMsg = this.enrichDbKeyErrorMessage(
+          this.mapDbKeyErrorMessage(parsed.code, parsed.detail),
+          parsed.code,
+          parsed.detail
+        )
         onStatus?.(errorMsg, 2)
         return { success: false, error: errorMsg }
       }
 
+      this.resetRestrictedFailureState()
       onStatus?.('密钥获取成功', 1)
       return { success: true, key: parsed.key }
     } catch (e: any) {
       console.error('[KeyServiceMac] Error:', e)
       console.error('[KeyServiceMac] Stack:', e.stack)
-      onStatus?.('获取失败: ' + e.message, 2)
-      return { success: false, error: e.message }
+      const rawError = `${e?.message || e || ''}`.trim()
+      const resolvedError = this.resolveUnexpectedDbKeyErrorMessage(rawError)
+      onStatus?.(resolvedError, 2)
+      return { success: false, error: resolvedError }
     }
   }
 
@@ -221,6 +231,149 @@ export class KeyServiceMac {
   ): Promise<{ success: boolean; key?: string; code?: string; detail?: string; raw: string }> {
     const helperResult = await this.getDbKeyByHelper(timeoutMs, onStatus)
     return this.parseDbKeyResult(helperResult)
+  }
+
+  private resetRestrictedFailureState(): void {
+    this.restrictedFailureCount = 0
+    this.restrictedFailureAt = 0
+  }
+
+  private markRestrictedFailureAndGetCount(): number {
+    const now = Date.now()
+    if (now - this.restrictedFailureAt > this.restrictedFailureWindowMs) {
+      this.restrictedFailureCount = 0
+    }
+    this.restrictedFailureAt = now
+    this.restrictedFailureCount += 1
+    return this.restrictedFailureCount
+  }
+
+  private isRestrictedEnvironmentFailure(code?: string, detail?: string): boolean {
+    const normalizedCode = String(code || '').toUpperCase()
+    const normalizedDetail = String(detail || '').toLowerCase()
+    if (!normalizedCode && !normalizedDetail) return false
+
+    if (normalizedCode === 'SCAN_FAILED') {
+      return normalizedDetail.includes('sink pattern not found')
+        || normalizedDetail.includes('no suitable module found')
+    }
+
+    if (normalizedCode === 'HOOK_FAILED') {
+      return normalizedDetail.includes('patch_breakpoint_failed')
+        || normalizedDetail.includes('thread_get_state_failed')
+        || normalizedDetail.includes('native hook failed')
+    }
+
+    if (normalizedCode === 'ATTACH_FAILED') {
+      return normalizedDetail.includes('task_for_pid:5')
+        || normalizedDetail.includes('thread_get_state_failed')
+    }
+
+    return normalizedDetail.includes('patch_breakpoint_failed')
+      || normalizedDetail.includes('thread_get_state_failed')
+      || normalizedDetail.includes('sink pattern not found')
+      || normalizedDetail.includes('no suitable module found')
+  }
+
+  private getMacRecoveryHint(isRepeatedFailure: boolean): string {
+    const steps = isRepeatedFailure
+      ? '建议步骤：彻底退出微信 -> 重启电脑（冷启动）-> 降级微信到 4.1.7 -> 仅尝试一次自动获取 -> 成功后再升级微信。'
+      : '建议步骤：降级微信到 4.1.7 -> 重启电脑（冷启动）-> 自动获取密钥 -> 成功后再升级微信。'
+    return `${steps}\n请不要连续重试，以免触发微信安全模式或系统内存保护。`
+  }
+
+  private simplifyDbKeyDetail(detail?: string): string {
+    const raw = String(detail || '')
+      .replace(/^WF_OK::/i, '')
+      .replace(/^WF_ERR::/i, '')
+      .replace(/\r?\n/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+    if (!raw) return ''
+
+    const keys = [
+      'No suitable module found',
+      'Sink pattern not found',
+      'patch_breakpoint_failed',
+      'thread_get_state_failed',
+      'task_for_pid:5',
+      'attach_wait_timeout',
+      'HOOK_TIMEOUT',
+      'FRIDA_TIMEOUT'
+    ]
+    for (const key of keys) {
+      if (raw.includes(key)) return key
+    }
+
+    const stripped = raw
+      .replace(/\[xkey_helper\]/gi, ' ')
+      .replace(/\[debug\]/gi, ' ')
+      .replace(/\[\*\]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+    if (!stripped) return ''
+    return stripped.length > 140 ? `${stripped.slice(0, 140)}...` : stripped
+  }
+
+  private extractDbKeyErrorFromAnyText(text?: string): { code?: string; detail?: string } {
+    const raw = String(text || '')
+    if (!raw) return {}
+
+    const explicit = raw.match(/ERROR:([A-Z_]+):([^\r\n]*)/)
+    if (explicit) {
+      return {
+        code: explicit[1] || 'UNKNOWN',
+        detail: this.simplifyDbKeyDetail(explicit[2] || '')
+      }
+    }
+
+    if (raw.includes('No suitable module found')) {
+      return { code: 'SCAN_FAILED', detail: 'No suitable module found' }
+    }
+    if (raw.includes('Sink pattern not found')) {
+      return { code: 'SCAN_FAILED', detail: 'Sink pattern not found' }
+    }
+    if (raw.includes('patch_breakpoint_failed')) {
+      return { code: 'HOOK_FAILED', detail: 'patch_breakpoint_failed' }
+    }
+    if (raw.includes('thread_get_state_failed')) {
+      return { code: 'HOOK_FAILED', detail: 'thread_get_state_failed' }
+    }
+    if (raw.includes('task_for_pid:5')) {
+      return { code: 'ATTACH_FAILED', detail: 'task_for_pid:5' }
+    }
+
+    return {}
+  }
+
+  private resolveUnexpectedDbKeyErrorMessage(rawError?: string): string {
+    const text = String(rawError || '').trim()
+    const { code, detail } = this.extractDbKeyErrorFromAnyText(text)
+    if (code) {
+      const mapped = this.mapDbKeyErrorMessage(code, detail)
+      return this.enrichDbKeyErrorMessage(mapped, code, detail)
+    }
+
+    if (text.includes('helper timeout')) {
+      return '获取密钥超时：请保持微信前台并进行一次会话操作后重试。'
+    }
+    if (text.includes('helper returned empty output') || text.includes('invalid json')) {
+      return '获取失败：helper 未返回可识别结果，请彻底退出微信后重启电脑再试。'
+    }
+    if (text.includes('xkey_helper not found')) {
+      return '获取失败：未找到 xkey_helper，请重新安装 WeFlow 后重试。'
+    }
+    return '自动获取密钥失败：环境可能受限或版本暂未适配，请稍后重试。'
+  }
+
+  private enrichDbKeyErrorMessage(baseMessage: string, code?: string, detail?: string): string {
+    if (!this.isRestrictedEnvironmentFailure(code, detail)) return baseMessage
+
+    const failureCount = this.markRestrictedFailureAndGetCount()
+    if (failureCount >= 2) {
+      return `${baseMessage}\n检测到连续失败，疑似已进入受限状态。请先彻底退出微信并重启电脑，再按下方步骤处理。\n${this.getMacRecoveryHint(true)}`
+    }
+    return `${baseMessage}\n${this.getMacRecoveryHint(false)}`
   }
 
   private async getWeChatPid(): Promise<number> {
@@ -498,7 +651,12 @@ export class KeyServiceMac {
       const errNum = parts[1] || 'unknown'
       const errMsg = parts[2] || 'unknown'
       const partial = parts.slice(3).join('::')
-      throw new Error(`elevated helper failed: errNum=${errNum}, errMsg=${errMsg}, partial=${partial || '(empty)'}`)
+      if (errNum === '-128' || String(errMsg).includes('User canceled')) {
+        throw new Error('User canceled')
+      }
+      const inferred = this.extractDbKeyErrorFromAnyText(`${errMsg}\n${partial}`)
+      if (inferred.code) return `ERROR:${inferred.code}:${inferred.detail || ''}`
+      throw new Error(`elevated helper failed: errNum=${errNum}, errMsg=${this.simplifyDbKeyDetail(errMsg) || 'unknown'}`)
     }
     const normalizedOutput = joined.startsWith('WF_OK::') ? joined.slice('WF_OK::'.length) : joined
 
@@ -520,49 +678,57 @@ export class KeyServiceMac {
     // 其次找 result 字段
     const resultPayload = allJson.find(p => typeof p?.result === 'string')
     if (resultPayload) return resultPayload.result
-    throw new Error('elevated helper returned invalid json: ' + lines[lines.length - 1])
+    const inferred = this.extractDbKeyErrorFromAnyText(normalizedOutput)
+    if (inferred.code) return `ERROR:${inferred.code}:${inferred.detail || ''}`
+    throw new Error('elevated helper returned invalid output')
   }
 
   private mapDbKeyErrorMessage(code?: string, detail?: string): string {
+    const normalizedDetail = this.simplifyDbKeyDetail(detail)
     if (code === 'PROCESS_NOT_FOUND') return '微信进程未运行'
     if (code === 'ATTACH_FAILED') {
       const isDevElectron = process.execPath.includes('/node_modules/electron/')
-      if ((detail || '').includes('task_for_pid:5')) {
+      if (normalizedDetail.includes('task_for_pid:5')) {
         if (isDevElectron) {
           return `无法附加到微信进程（task_for_pid 被拒绝）。当前为开发环境 Electron：${process.execPath}\n建议使用打包后的 WeFlow.app（已携带调试 entitlements）再重试。`
         }
-        return '无法附加到微信进程（task_for_pid 被系统拒绝）。请确认当前运行程序已正确签名并包含调试 entitlements。'
+        return '无法附加到微信进程（task_for_pid 被系统拒绝）。请确认当前运行程序已正确签名并包含调试 entitlements，优先使用打包版 WeFlow.app。'
       }
-      return `无法附加到进程 (${detail || ''})`
+      if (normalizedDetail.includes('thread_get_state_failed')) {
+        return `无法附加到进程：系统拒绝读取线程状态（${normalizedDetail}）。`
+      }
+      return `无法附加到进程 (${normalizedDetail || ''})`
     }
     if (code === 'FRIDA_FAILED') {
-      if ((detail || '').includes('FRIDA_TIMEOUT')) {
+      if (normalizedDetail.includes('FRIDA_TIMEOUT')) {
         return '定位已成功但在等待时间内未捕获到密钥调用。请保持微信前台并进行一次会话/数据库访问后重试。'
       }
-      return `Frida 语义定位失败 (${detail || ''})`
+      return `Frida 语义定位失败 (${normalizedDetail || ''})`
     }
     if (code === 'HOOK_FAILED') {
-      if ((detail || '').includes('HOOK_TIMEOUT')) {
+      if (normalizedDetail.includes('HOOK_TIMEOUT')) {
         return 'Hook 已安装，但在等待时间内未触发目标函数。请保持微信前台并执行一次会话/数据库访问后重试。'
       }
-      if ((detail || '').includes('attach_wait_timeout')) {
+      if (normalizedDetail.includes('attach_wait_timeout')) {
         return '附加调试器超时，未能进入 Hook 阶段。请确认微信处于可交互状态并重试。'
       }
-      return `原生 Hook 失败 (${detail || ''})`
+      if (normalizedDetail.includes('patch_breakpoint_failed') || normalizedDetail.includes('thread_get_state_failed')) {
+        return `原生 Hook 失败：检测到系统调试权限或内存保护冲突（${normalizedDetail}）。`
+      }
+      return `原生 Hook 失败 (${normalizedDetail || ''})`
     }
     if (code === 'HOOK_TARGET_ONLY') {
-      return `已定位到目标函数地址（${detail || ''}），但当前原生 C++ 仅完成定位，尚未完成远程 Hook 回调取 key 流程。`
+      return `已定位到目标函数地址（${normalizedDetail || ''}），但当前原生 C++ 仅完成定位，尚未完成远程 Hook 回调取 key 流程。`
     }
     if (code === 'SCAN_FAILED') {
-      const normalizedDetail = (detail || '').trim()
       if (!normalizedDetail) {
         return '内存扫描失败：未匹配到可用特征。可能是当前微信版本更新导致，请升级 WeFlow 后重试。'
       }
       if (normalizedDetail.includes('Sink pattern not found')) {
-        return '内存扫描失败：未匹配到目标函数特征，可使用微信 4.1.8.100 版本尝试。'
+        return '内存扫描失败：未匹配到目标函数特征（Sink pattern not found），当前微信版本可能暂未适配。'
       }
       if (normalizedDetail.includes('No suitable module found')) {
-        return '内存扫描失败：未找到可扫描的微信主模块。请确认微信已完整启动并保持前台，再重试。'
+        return '内存扫描失败：未找到可扫描的微信主模块。请确认微信已完整启动并保持前台；若仍失败，优先尝试微信 4.1.7。'
       }
       return `内存扫描失败：${normalizedDetail}`
     }

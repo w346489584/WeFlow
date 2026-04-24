@@ -666,7 +666,28 @@
   font-size: 14px;
   margin-top: 16px;
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  white-space: pre-wrap;
+}
+
+.error-text {
+  width: 100%;
+}
+
+.error-link-btn {
+  border: none;
+  background: transparent;
+  color: #0f62fe;
+  text-decoration: underline;
+  cursor: pointer;
+  font-size: 13px;
+  padding: 0;
+
+  &:hover {
+    opacity: 0.9;
+  }
 }
 
 .intro-footer {

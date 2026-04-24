@@ -338,6 +338,22 @@
     color: var(--text-secondary);
   }
 
+  .mac-key-faq-link {
+    border: none;
+    background: transparent;
+    color: #0f62fe;
+    text-decoration: underline;
+    cursor: pointer;
+    font-size: 12px;
+    padding: 0;
+    margin-top: 6px;
+    display: inline-block;
+
+    &:hover {
+      opacity: 0.9;
+    }
+  }
+
   .manual-prompt {
     background: rgba(139, 115, 85, 0.1);
     border: 1px dashed rgba(139, 115, 85, 0.3);

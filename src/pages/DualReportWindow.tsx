@@ -70,7 +70,7 @@ interface DualReportData {
   friendExclusivePhrases: Array<{ phrase: string; count: number }>
   heatmap?: number[][]
   initiative?: { initiated: number; received: number }
-  response?: { avg: number; fastest: number; slowest: number; count: number }
+  response?: { avg: number; fastest: number; slowest?: number; count: number }
   monthly?: Record<string, number>
   streak?: { days: number; startDate: string; endDate: string }
 }
@@ -149,7 +149,7 @@ function DualReportWindow() {
 
   const generateReport = async (friendUsername: string, year: number) => {
     const taskId = registerBackgroundTask({
-      sourcePage: 'dualReport',
+      sourcePage: 'annualReport',
       title: '双人报告生成',
       detail: `正在生成 ${year === 0 ? '历史以来' : year + '年'} 双人年度报告`,
       progressText: '初始化',
@@ -302,6 +302,17 @@ function DualReportWindow() {
   const handleClose = () => { navigate('/home') }
 
   const formatFileYearLabel = (year: number) => (year === 0 ? '历史以来' : String(year))
+  const formatMonthDayTime = (timestamp?: number) => {
+    if (!timestamp || Number.isNaN(timestamp)) return ''
+    const msTimestamp = timestamp > 1e12 ? timestamp : timestamp * 1000
+    const date = new Date(msTimestamp)
+    if (Number.isNaN(date.getTime())) return ''
+    const month = String(date.getMonth() + 1).padStart(2, '0')
+    const day = String(date.getDate()).padStart(2, '0')
+    const hour = String(date.getHours()).padStart(2, '0')
+    const minute = String(date.getMinutes()).padStart(2, '0')
+    return `${month}-${day} ${hour}:${minute}`
+  }
   const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
   const waitForNextPaint = () => new Promise<void>((resolve) => {
     requestAnimationFrame(() => { requestAnimationFrame(() => resolve()) })
@@ -427,7 +438,11 @@ function DualReportWindow() {
 
   // 计算第一句话数据
   const displayFirstChat = reportData.yearFirstChat || reportData.firstChat
-  const firstChatArray = (reportData.yearFirstChatMessages || reportData.firstChatMessages || (displayFirstChat ? [displayFirstChat] : [])).slice(0, 3)
+  const firstChatArray = (
+    reportData.yearFirstChat?.firstThreeMessages ||
+    reportData.firstChatMessages ||
+    (displayFirstChat ? [displayFirstChat] : [])
+  ).slice(0, 3)
   
   // 聊天火花
   const showSpark = reportData.streak && reportData.streak.days > 0
@@ -487,8 +502,8 @@ function DualReportWindow() {
             <div className="reveal-wrap"><h2 className="reveal-inner title delay-2">故事的开始</h2></div>
             <div className="s1-messages reveal-inner delay-3">
               {firstChatArray.map((chat: any, idx: number) => (
-                <div key={idx} className={`s1-message-item ${chat.sender === 'self' ? 'sent' : ''}`}>
-                  <span className="s1-meta">{chat.createTimeStr || formatMonthDayTime(chat.timestamp)}</span>
+                <div key={idx} className={`s1-message-item ${chat.isSentByMe ? 'sent' : ''}`}>
+                  <span className="s1-meta">{chat.createTimeStr || formatMonthDayTime(chat.createTime)}</span>
                   <div className="scene-bubble s1-bubble">{formatFirstChat(chat.content)}</div>
                 </div>
               ))}

@@ -56,6 +56,7 @@ const aiTabs: Array<{ id: Extract<SettingsTab, 'aiCommon' | 'insight' | 'aiFootp
 const isMac = navigator.userAgent.toLowerCase().includes('mac')
 const isLinux = navigator.userAgent.toLowerCase().includes('linux')
 const isWindows = !isMac && !isLinux
+const MAC_KEY_FAQ_URL = 'https://github.com/hicccc77/WeFlow/blob/main/docs/MAC-KEY-FAQ.md'
 
 const dbDirName = isMac ? '2.0b4.0.9 目录' : 'xwechat_files 目录'
 const dbPathPlaceholder = isMac
@@ -225,6 +226,7 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
   const [message, setMessage] = useState<{ text: string; success: boolean } | null>(null)
   const [showDecryptKey, setShowDecryptKey] = useState(false)
   const [dbKeyStatus, setDbKeyStatus] = useState('')
+  const [dbKeyError, setDbKeyError] = useState('')
   const [imageKeyStatus, setImageKeyStatus] = useState('')
   const [isManualStartPrompt, setIsManualStartPrompt] = useState(false)
   const [isClearingAnalyticsCache, setIsClearingAnalyticsCache] = useState(false)
@@ -1254,12 +1256,14 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
     if (isFetchingDbKey) return
     setIsFetchingDbKey(true)
     setIsManualStartPrompt(false)
+    setDbKeyError('')
     setDbKeyStatus('正在连接微信进程...')
     try {
       const result = await window.electronAPI.key.autoGetDbKey()
       if (result.success && result.key) {
         setDecryptKey(result.key)
         setDbKeyStatus('密钥获取成功')
+        setDbKeyError('')
         showMessage('已自动获取解密密钥', true)
         await syncCurrentKeys({ decryptKey: result.key, wxid })
         const keysOverride = buildKeysFromInputs({ decryptKey: result.key })
@@ -1274,15 +1278,24 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
         ) {
           setIsManualStartPrompt(true)
           setDbKeyStatus('需要手动启动微信')
+          setDbKeyError('')
         } else {
-          showMessage(result.error || '自动获取密钥失败', false)
+          const failureMessage = result.error || '自动获取密钥失败'
+          setDbKeyError(failureMessage)
+          showMessage(failureMessage, false)
         }
       }
     } catch (e: any) {
-      showMessage(`自动获取密钥失败: ${e}`, false)
+      const failureMessage = `自动获取密钥失败: ${e}`
+      setDbKeyError(failureMessage)
+      showMessage(failureMessage, false)
     } finally {
       setIsFetchingDbKey(false)
     }
+  }
+
+  const openMacKeyFaq = () => {
+    void window.electronAPI.shell.openExternal(MAC_KEY_FAQ_URL)
   }
 
   const handleManualConfirm = async () => {
@@ -2207,6 +2220,11 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
           </button>
         )}
         {dbKeyStatus && <div className="form-hint status-text">{dbKeyStatus}</div>}
+        {isMac && dbKeyError && (
+          <button type="button" className="mac-key-faq-link" onClick={openMacKeyFaq}>
+            查看 macOS 获取密钥排障指引
+          </button>
+        )}
       </div>
 
       <div className="form-group">
