@@ -91,6 +91,11 @@ export class WcdbCore {
   private wcdbGetSnsUsernames: any = null
   private wcdbGetSnsExportStats: any = null
   private wcdbGetMessageTableColumns: any = null
+  private wcdbListTables: any = null
+  private wcdbGetTableSchema: any = null
+  private wcdbExportTableSnapshot: any = null
+  private wcdbImportTableSnapshot: any = null
+  private wcdbImportTableSnapshotWithSchema: any = null
   private wcdbGetMessageTableTimeRange: any = null
   private wcdbResolveImageHardlink: any = null
   private wcdbResolveImageHardlinkBatch: any = null
@@ -1089,6 +1094,31 @@ export class WcdbCore {
         this.wcdbGetMessageTableColumns = this.lib.func('int32 wcdb_get_message_table_columns(int64 handle, const char* dbPath, const char* tableName, _Out_ void** outJson)')
       } catch {
         this.wcdbGetMessageTableColumns = null
+      }
+      try {
+        this.wcdbListTables = this.lib.func('int32 wcdb_list_tables(int64 handle, const char* kind, const char* dbPath, _Out_ void** outJson)')
+      } catch {
+        this.wcdbListTables = null
+      }
+      try {
+        this.wcdbGetTableSchema = this.lib.func('int32 wcdb_get_table_schema(int64 handle, const char* kind, const char* dbPath, const char* tableName, _Out_ void** outJson)')
+      } catch {
+        this.wcdbGetTableSchema = null
+      }
+      try {
+        this.wcdbExportTableSnapshot = this.lib.func('int32 wcdb_export_table_snapshot(int64 handle, const char* kind, const char* dbPath, const char* tableName, const char* outputPath, _Out_ void** outJson)')
+      } catch {
+        this.wcdbExportTableSnapshot = null
+      }
+      try {
+        this.wcdbImportTableSnapshot = this.lib.func('int32 wcdb_import_table_snapshot(int64 handle, const char* kind, const char* dbPath, const char* tableName, const char* inputPath, _Out_ void** outJson)')
+      } catch {
+        this.wcdbImportTableSnapshot = null
+      }
+      try {
+        this.wcdbImportTableSnapshotWithSchema = this.lib.func('int32 wcdb_import_table_snapshot_with_schema(int64 handle, const char* kind, const char* dbPath, const char* tableName, const char* inputPath, const char* createTableSql, _Out_ void** outJson)')
+      } catch {
+        this.wcdbImportTableSnapshotWithSchema = null
       }
       try {
         this.wcdbGetMessageTableTimeRange = this.lib.func('int32 wcdb_get_message_table_time_range(int64 handle, const char* dbPath, const char* tableName, _Out_ void** outJson)')
@@ -2897,6 +2927,96 @@ export class WcdbCore {
       if (!jsonStr) return { success: false, error: '解析消息表列失败' }
       const columns = JSON.parse(jsonStr)
       return { success: true, columns: Array.isArray(columns) ? columns.map((c: any) => String(c || '')) : [] }
+    } catch (e) {
+      return { success: false, error: String(e) }
+    }
+  }
+
+  async listTables(kind: string, dbPath: string = ''): Promise<{ success: boolean; tables?: string[]; error?: string }> {
+    if (!this.ensureReady()) return { success: false, error: 'WCDB 未连接' }
+    if (!this.wcdbListTables) return { success: false, error: '接口未就绪' }
+    try {
+      const outPtr = [null as any]
+      const result = this.wcdbListTables(this.handle, kind, dbPath || '', outPtr)
+      if (result !== 0 || !outPtr[0]) return { success: false, error: `获取表列表失败: ${result}` }
+      const jsonStr = this.decodeJsonPtr(outPtr[0])
+      if (!jsonStr) return { success: false, error: '解析表列表失败' }
+      const tables = JSON.parse(jsonStr)
+      return { success: true, tables: Array.isArray(tables) ? tables.map((c: any) => String(c || '')).filter(Boolean) : [] }
+    } catch (e) {
+      return { success: false, error: String(e) }
+    }
+  }
+
+  async getTableSchema(kind: string, dbPath: string, tableName: string): Promise<{ success: boolean; schema?: string; error?: string }> {
+    if (!this.ensureReady()) return { success: false, error: 'WCDB 未连接' }
+    if (!this.wcdbGetTableSchema) return { success: false, error: '接口未就绪' }
+    try {
+      const outPtr = [null as any]
+      const result = this.wcdbGetTableSchema(this.handle, kind, dbPath || '', tableName, outPtr)
+      const jsonStr = outPtr[0] ? this.decodeJsonPtr(outPtr[0]) : ''
+      const data = jsonStr ? JSON.parse(jsonStr) : {}
+      if (result !== 0 || data?.success === false) return { success: false, error: data?.error || `获取表结构失败: ${result}` }
+      return { success: true, schema: String(data?.schema || '') }
+    } catch (e) {
+      return { success: false, error: String(e) }
+    }
+  }
+
+  async exportTableSnapshot(kind: string, dbPath: string, tableName: string, outputPath: string): Promise<{ success: boolean; rows?: number; columns?: number; error?: string }> {
+    if (!this.ensureReady()) return { success: false, error: 'WCDB 未连接' }
+    if (!this.wcdbExportTableSnapshot) return { success: false, error: '接口未就绪' }
+    try {
+      const outPtr = [null as any]
+      const result = this.wcdbExportTableSnapshot(this.handle, kind, dbPath || '', tableName, outputPath, outPtr)
+      const jsonStr = outPtr[0] ? this.decodeJsonPtr(outPtr[0]) : ''
+      const data = jsonStr ? JSON.parse(jsonStr) : {}
+      if (result !== 0 || data?.success === false) return { success: false, error: data?.error || `导出表快照失败: ${result}` }
+      return { success: true, rows: Number(data?.rows || 0), columns: Number(data?.columns || 0) }
+    } catch (e) {
+      return { success: false, error: String(e) }
+    }
+  }
+
+  async importTableSnapshot(kind: string, dbPath: string, tableName: string, inputPath: string): Promise<{ success: boolean; rows?: number; inserted?: number; ignored?: number; malformed?: number; columns?: number; error?: string }> {
+    if (!this.ensureReady()) return { success: false, error: 'WCDB 未连接' }
+    if (!this.wcdbImportTableSnapshot) return { success: false, error: '接口未就绪' }
+    try {
+      const outPtr = [null as any]
+      const result = this.wcdbImportTableSnapshot(this.handle, kind, dbPath || '', tableName, inputPath, outPtr)
+      const jsonStr = outPtr[0] ? this.decodeJsonPtr(outPtr[0]) : ''
+      const data = jsonStr ? JSON.parse(jsonStr) : {}
+      if (result !== 0 || data?.success === false) return { success: false, error: data?.error || `导入表快照失败: ${result}` }
+      return {
+        success: true,
+        rows: Number(data?.rows || 0),
+        inserted: Number(data?.inserted || 0),
+        ignored: Number(data?.ignored || 0),
+        malformed: Number(data?.malformed || 0),
+        columns: Number(data?.columns || 0)
+      }
+    } catch (e) {
+      return { success: false, error: String(e) }
+    }
+  }
+
+  async importTableSnapshotWithSchema(kind: string, dbPath: string, tableName: string, inputPath: string, createTableSql: string): Promise<{ success: boolean; rows?: number; inserted?: number; ignored?: number; malformed?: number; columns?: number; error?: string }> {
+    if (!this.ensureReady()) return { success: false, error: 'WCDB 未连接' }
+    if (!this.wcdbImportTableSnapshotWithSchema) return { success: false, error: '接口未就绪' }
+    try {
+      const outPtr = [null as any]
+      const result = this.wcdbImportTableSnapshotWithSchema(this.handle, kind, dbPath || '', tableName, inputPath, createTableSql || '', outPtr)
+      const jsonStr = outPtr[0] ? this.decodeJsonPtr(outPtr[0]) : ''
+      const data = jsonStr ? JSON.parse(jsonStr) : {}
+      if (result !== 0 || data?.success === false) return { success: false, error: data?.error || `导入表快照失败: ${result}` }
+      return {
+        success: true,
+        rows: Number(data?.rows || 0),
+        inserted: Number(data?.inserted || 0),
+        ignored: Number(data?.ignored || 0),
+        malformed: Number(data?.malformed || 0),
+        columns: Number(data?.columns || 0)
+      }
     } catch (e) {
       return { success: false, error: String(e) }
     }

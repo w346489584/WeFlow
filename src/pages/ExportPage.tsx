@@ -80,7 +80,7 @@ import {
 import './ExportPage.scss'
 
 type ConversationTab = 'private' | 'group' | 'official' | 'former_friend'
-type TaskStatus = 'queued' | 'running' | 'success' | 'error'
+type TaskStatus = 'queued' | 'running' | 'pause_requested' | 'paused' | 'cancel_requested' | 'success' | 'error'
 type TaskScope = 'single' | 'multi' | 'content' | 'sns'
 type ContentType = 'text' | 'voice' | 'image' | 'video' | 'emoji' | 'file'
 type ContentCardType = ContentType | 'sns'
@@ -578,9 +578,26 @@ const formatDurationMs = (ms: number): string => {
 const getTaskStatusLabel = (task: ExportTask): string => {
   if (task.status === 'queued') return '排队中'
   if (task.status === 'running') return '进行中'
+  if (task.status === 'pause_requested') return '暂停中'
+  if (task.status === 'paused') return '已暂停'
+  if (task.status === 'cancel_requested') return '取消中'
   if (task.status === 'success') return '已完成'
   return '失败'
 }
+
+const resolveExportTaskCardClass = (status: TaskStatus): 'queued' | 'running' | 'paused' | 'stopped' | 'success' | 'error' => {
+  if (status === 'pause_requested' || status === 'paused') return 'paused'
+  if (status === 'cancel_requested') return 'stopped'
+  return status
+}
+
+const isExportTaskActiveStatus = (status: TaskStatus): boolean => (
+  status === 'queued' ||
+  status === 'running' ||
+  status === 'pause_requested' ||
+  status === 'paused' ||
+  status === 'cancel_requested'
+)
 
 const resolveBackgroundTaskCardClass = (status: BackgroundTaskRecord['status']): 'running' | 'paused' | 'stopped' | 'success' | 'error' => {
   if (status === 'running') return 'running'
@@ -1809,6 +1826,9 @@ interface TaskCenterModalProps {
   nowTick: number
   onClose: () => void
   onTogglePerfTask: (taskId: string) => void
+  onPauseExportTask: (taskId: string) => void
+  onResumeExportTask: (taskId: string) => void
+  onCancelExportTask: (taskId: string) => void
   onPauseBackgroundTask: (taskId: string) => void
   onResumeBackgroundTask: (taskId: string) => void
   onCancelBackgroundTask: (taskId: string) => void
@@ -1824,6 +1844,9 @@ const TaskCenterModal = memo(function TaskCenterModal({
   nowTick,
   onClose,
   onTogglePerfTask,
+  onPauseExportTask,
+  onResumeExportTask,
+  onCancelExportTask,
   onPauseBackgroundTask,
   onResumeBackgroundTask,
   onCancelBackgroundTask
@@ -1954,15 +1977,31 @@ const TaskCenterModal = memo(function TaskCenterModal({
                       : `图片耗时 ${formatDurationMs(imageTimingElapsedMs)}`
                   )
                   : ''
+                const taskCardClass = resolveExportTaskCardClass(task.status)
+                const canShowProgress = (
+                  task.status === 'running' ||
+                  task.status === 'pause_requested' ||
+                  task.status === 'paused' ||
+                  task.status === 'cancel_requested'
+                )
+                const canPause = task.status === 'running'
+                const canResume = task.status === 'paused' || task.status === 'pause_requested'
+                const canCancel = (
+                  task.status === 'queued' ||
+                  task.status === 'running' ||
+                  task.status === 'pause_requested' ||
+                  task.status === 'paused' ||
+                  task.status === 'cancel_requested'
+                )
                 return (
-                  <div key={task.id} className={`task-card ${task.status}`}>
+                  <div key={task.id} className={`task-card ${taskCardClass}`}>
                     <div className="task-main">
                       <div className="task-title">{task.title}</div>
                       <div className="task-meta">
-                        <span className={`task-status ${task.status}`}>{getTaskStatusLabel(task)}</span>
+                        <span className={`task-status ${taskCardClass}`}>{getTaskStatusLabel(task)}</span>
                         <span>{new Date(task.createdAt).toLocaleString('zh-CN')}</span>
                       </div>
-                      {task.status === 'running' && (
+                      {canShowProgress && (
                         <>
                           <div className="task-progress-bar">
                             <div
@@ -2048,6 +2087,34 @@ const TaskCenterModal = memo(function TaskCenterModal({
                           onClick={() => onTogglePerfTask(task.id)}
                         >
                           {isPerfExpanded ? '收起详情' : '性能详情'}
+                        </button>
+                      )}
+                      {canPause && (
+                        <button
+                          className="task-action-btn"
+                          type="button"
+                          onClick={() => onPauseExportTask(task.id)}
+                        >
+                          <Pause size={14} /> 暂停
+                        </button>
+                      )}
+                      {canResume && (
+                        <button
+                          className="task-action-btn primary"
+                          type="button"
+                          onClick={() => onResumeExportTask(task.id)}
+                        >
+                          <Play size={14} /> 继续
+                        </button>
+                      )}
+                      {canCancel && (
+                        <button
+                          className="task-action-btn danger"
+                          type="button"
+                          onClick={() => onCancelExportTask(task.id)}
+                          disabled={task.status === 'cancel_requested'}
+                        >
+                          <Square size={14} /> {task.status === 'cancel_requested' ? '取消中' : '取消'}
                         </button>
                       )}
                       <button
@@ -5586,7 +5653,7 @@ function ExportPage() {
       const now = Date.now()
       const currentSessionId = String(payload.currentSessionId || '').trim()
       updateTask(next.id, task => {
-        if (task.status !== 'running') return task
+        if (task.status !== 'running' && task.status !== 'pause_requested' && task.status !== 'cancel_requested') return task
         const performance = applyProgressToTaskPerformance(task, payload, now)
         const settledSessionIds = task.settledSessionIds || []
         const nextSettledSessionIds = (
@@ -5740,7 +5807,8 @@ function ExportPage() {
           exportLivePhotos: snsOptions.exportLivePhotos,
           exportVideos: snsOptions.exportVideos,
           startTime: snsOptions.startTime,
-          endTime: snsOptions.endTime
+          endTime: snsOptions.endTime,
+          taskId: next.id
         })
 
         if (!result.success) {
@@ -5750,6 +5818,19 @@ function ExportPage() {
             finishedAt: Date.now(),
             error: result.error || '朋友圈导出失败',
             performance: finalizeTaskPerformance(task, Date.now())
+          }))
+        } else if (result.stopped) {
+          setTasks(prev => prev.filter(task => task.id !== next.id))
+        } else if (result.paused) {
+          updateTask(next.id, task => ({
+            ...task,
+            status: 'paused',
+            progress: {
+              ...task.progress,
+              phaseLabel: '已暂停，可继续或取消',
+              current: Math.max(task.progress.current, result.postCount || 0),
+              total: Math.max(task.progress.total, result.postCount || 0)
+            }
           }))
         } else {
           const doneAt = Date.now()
@@ -5782,7 +5863,8 @@ function ExportPage() {
         const result = await window.electronAPI.export.exportSessions(
           next.payload.sessionIds,
           next.payload.outputDir,
-          next.payload.options
+          next.payload.options,
+          { taskId: next.id }
         )
 
         if (!result.success) {
@@ -5792,6 +5874,33 @@ function ExportPage() {
             finishedAt: Date.now(),
             error: result.error || '导出失败',
             performance: finalizeTaskPerformance(task, Date.now())
+          }))
+        } else if (result.stopped) {
+          setTasks(prev => prev.filter(task => task.id !== next.id))
+        } else if (result.paused) {
+          const pendingSessionIds = Array.isArray(result.pendingSessionIds)
+            ? result.pendingSessionIds
+            : []
+          updateTask(next.id, task => ({
+            ...task,
+            status: 'paused',
+            payload: {
+              ...task.payload,
+              sessionIds: pendingSessionIds.length > 0 ? pendingSessionIds : task.payload.sessionIds
+            },
+            settledSessionIds: Array.isArray(result.successSessionIds)
+              ? Array.from(new Set([...(task.settledSessionIds || []), ...result.successSessionIds]))
+              : task.settledSessionIds,
+            sessionOutputPaths: {
+              ...(task.sessionOutputPaths || {}),
+              ...((result.sessionOutputPaths && typeof result.sessionOutputPaths === 'object')
+                ? result.sessionOutputPaths
+                : {})
+            },
+            progress: {
+              ...task.progress,
+              phaseLabel: '已暂停，可继续或取消'
+            }
           }))
         } else {
           const doneAt = Date.now()
@@ -5913,7 +6022,13 @@ function ExportPage() {
     }
 
     const hasConflict = tasksRef.current.some((item) => {
-      if (item.status !== 'running' && item.status !== 'queued') return false
+      if (
+        item.status !== 'running' &&
+        item.status !== 'queued' &&
+        item.status !== 'pause_requested' &&
+        item.status !== 'paused' &&
+        item.status !== 'cancel_requested'
+      ) return false
       return item.payload.automationTaskId === task.id
     })
     if (hasConflict) {
@@ -6200,7 +6315,7 @@ function ExportPage() {
   const runningSessionIds = useMemo(() => {
     const set = new Set<string>()
     for (const task of tasks) {
-      if (task.status !== 'running') continue
+      if (task.status !== 'running' && task.status !== 'pause_requested' && task.status !== 'cancel_requested') continue
       const settled = new Set(task.settledSessionIds || [])
       for (const id of task.payload.sessionIds) {
         if (settled.has(id)) continue
@@ -6213,7 +6328,7 @@ function ExportPage() {
   const queuedSessionIds = useMemo(() => {
     const set = new Set<string>()
     for (const task of tasks) {
-      if (task.status !== 'queued') continue
+      if (task.status !== 'queued' && task.status !== 'paused') continue
       for (const id of task.payload.sessionIds) {
         set.add(id)
       }
@@ -6224,7 +6339,7 @@ function ExportPage() {
   const inProgressSessionIds = useMemo(() => {
     const set = new Set<string>()
     for (const task of tasks) {
-      if (task.status !== 'running' && task.status !== 'queued') continue
+      if (!isExportTaskActiveStatus(task.status)) continue
       for (const id of task.payload.sessionIds) {
         set.add(id)
       }
@@ -6232,7 +6347,7 @@ function ExportPage() {
     return Array.from(set).sort()
   }, [tasks])
   const activeTaskCount = useMemo(
-    () => tasks.filter(task => task.status === 'running' || task.status === 'queued').length,
+    () => tasks.filter(task => isExportTaskActiveStatus(task.status)).length,
     [tasks]
   )
 
@@ -6247,7 +6362,7 @@ function ExportPage() {
       if (previousStatus === task.status) continue
 
       const now = Date.now()
-      if (task.status === 'running') {
+      if (task.status === 'running' || task.status === 'pause_requested' || task.status === 'paused' || task.status === 'cancel_requested') {
         patchAutomationTask(automationTaskId, (current) => ({
           ...current,
           updatedAt: now,
@@ -6338,7 +6453,13 @@ function ExportPage() {
         if (task.runState?.lastScheduleKey === scheduleKey) continue
 
         const hasConflict = tasksRef.current.some((item) => {
-          if (item.status !== 'running' && item.status !== 'queued') return false
+          if (
+            item.status !== 'running' &&
+            item.status !== 'queued' &&
+            item.status !== 'pause_requested' &&
+            item.status !== 'paused' &&
+            item.status !== 'cancel_requested'
+          ) return false
           return item.payload.automationTaskId === task.id
         })
         if (hasConflict) {
@@ -6448,7 +6569,7 @@ function ExportPage() {
   const runningCardTypes = useMemo(() => {
     const set = new Set<ContentCardType>()
     for (const task of tasks) {
-      if (task.status !== 'running') continue
+      if (!isExportTaskActiveStatus(task.status)) continue
       if (task.payload.scope === 'sns') {
         set.add('sns')
         continue
@@ -7891,7 +8012,12 @@ function ExportPage() {
   )
   const isTabCountComputing = isSharedTabCountsLoading && !isSharedTabCountsReady
   const isSnsCardStatsLoading = !hasSeededSnsStats
-  const taskRunningCount = tasks.filter(task => task.status === 'running').length
+  const taskRunningCount = tasks.filter(task => (
+    task.status === 'running' ||
+    task.status === 'pause_requested' ||
+    task.status === 'paused' ||
+    task.status === 'cancel_requested'
+  )).length
   const taskQueuedCount = tasks.filter(task => task.status === 'queued').length
   const chatBackgroundTasks = useMemo(() => (
     backgroundTasks.filter(task => task.sourcePage === 'chat')
@@ -8105,6 +8231,112 @@ function ExportPage() {
   const toggleTaskPerfDetail = useCallback((taskId: string) => {
     setExpandedPerfTaskId(prev => (prev === taskId ? null : taskId))
   }, [])
+  const handlePauseExportTask = useCallback((taskId: string) => {
+    const task = tasksRef.current.find(item => item.id === taskId)
+    if (!task || task.status !== 'running') return
+    updateTask(taskId, current => ({
+      ...current,
+      status: 'pause_requested',
+      progress: {
+        ...current.progress,
+        phaseLabel: current.progress.phaseLabel || '暂停请求已发送'
+      }
+    }))
+    window.electronAPI.export.pauseTask(taskId).then(result => {
+      if (result.success) return
+      updateTask(taskId, current => ({
+        ...current,
+        status: current.status === 'pause_requested' ? 'running' : current.status,
+        error: result.error || '暂停请求失败'
+      }))
+    }).catch(error => {
+      updateTask(taskId, current => ({
+        ...current,
+        status: current.status === 'pause_requested' ? 'running' : current.status,
+        error: String(error)
+      }))
+    })
+  }, [updateTask])
+  const handleResumeExportTask = useCallback((taskId: string) => {
+    const task = tasksRef.current.find(item => item.id === taskId)
+    if (!task || (task.status !== 'paused' && task.status !== 'pause_requested')) return
+    window.electronAPI.export.resumeTask(taskId).then(result => {
+      const doneAt = Date.now()
+      if (!result.success) {
+        updateTask(taskId, current => ({
+          ...current,
+          status: 'error',
+          finishedAt: doneAt,
+          error: result.error || '继续任务失败',
+          performance: finalizeTaskPerformance(current, doneAt)
+        }))
+        return
+      }
+      updateTask(taskId, current => ({
+        ...current,
+        status: current.status === 'pause_requested' ? 'running' : 'queued',
+        finishedAt: undefined,
+        error: undefined,
+        progress: {
+          ...current.progress,
+          phaseLabel: current.status === 'pause_requested' ? '继续中' : '等待继续'
+        }
+      }))
+    }).catch(error => {
+      const doneAt = Date.now()
+      updateTask(taskId, current => ({
+        ...current,
+        status: 'error',
+        finishedAt: doneAt,
+        error: String(error),
+        performance: finalizeTaskPerformance(current, doneAt)
+      }))
+    })
+  }, [updateTask])
+  const handleCancelExportTask = useCallback((taskId: string) => {
+    const task = tasksRef.current.find(item => item.id === taskId)
+    if (!task) return
+    if (task.status === 'queued') {
+      setTasks(prev => prev.filter(item => item.id !== taskId))
+      return
+    }
+    if (task.status !== 'running' && task.status !== 'pause_requested' && task.status !== 'paused' && task.status !== 'cancel_requested') {
+      return
+    }
+    updateTask(taskId, current => ({
+      ...current,
+      status: 'cancel_requested',
+      progress: {
+        ...current.progress,
+        phaseLabel: '取消请求已发送，正在安全停止'
+      }
+    }))
+    window.electronAPI.export.cancelTask(taskId).then(result => {
+      if (result.success && task.status === 'paused') {
+        setTasks(prev => prev.filter(item => item.id !== taskId))
+        return
+      }
+      if (!result.success) {
+        const doneAt = Date.now()
+        updateTask(taskId, current => ({
+          ...current,
+          status: 'error',
+          finishedAt: doneAt,
+          error: result.error || '取消任务失败',
+          performance: finalizeTaskPerformance(current, doneAt)
+        }))
+      }
+    }).catch(error => {
+      const doneAt = Date.now()
+      updateTask(taskId, current => ({
+        ...current,
+        status: 'error',
+        finishedAt: doneAt,
+        error: String(error),
+        performance: finalizeTaskPerformance(current, doneAt)
+      }))
+    })
+  }, [updateTask])
 
   const toggleAutomationTaskEnabled = useCallback((taskId: string, enabled: boolean) => {
     const now = Date.now()
@@ -8564,6 +8796,9 @@ function ExportPage() {
         nowTick={nowTick}
         onClose={closeTaskCenter}
         onTogglePerfTask={toggleTaskPerfDetail}
+        onPauseExportTask={handlePauseExportTask}
+        onResumeExportTask={handleResumeExportTask}
+        onCancelExportTask={handleCancelExportTask}
         onPauseBackgroundTask={handlePauseBackgroundTask}
         onResumeBackgroundTask={handleResumeBackgroundTask}
         onCancelBackgroundTask={handleCancelBackgroundTask}
@@ -8622,12 +8857,12 @@ function ExportPage() {
                 <div className="automation-task-list">
                   {sortedAutomationTasks.map((task) => {
                     const linkedQueueTask = tasks.find((item) => (
-                      (item.status === 'running' || item.status === 'queued') &&
+                      isExportTaskActiveStatus(item.status) &&
                       item.payload.automationTaskId === task.id
                     ))
                     const queueState: 'queued' | 'running' | null = linkedQueueTask?.status === 'running'
                       ? 'running'
-                      : linkedQueueTask?.status === 'queued'
+                      : linkedQueueTask && isExportTaskActiveStatus(linkedQueueTask.status)
                         ? 'queued'
                         : null
                     return (

@@ -252,6 +252,11 @@ jobs:
       - release-windows-arm64
 
     steps:
+      - name: Check out git repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+
       - name: Generate release notes with platform download links
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -345,7 +350,6 @@ jobs:
             updpkgsums: true
             assets: |
               resources/installer/linux/weflow.desktop
-              resources/installer/linux/icon.png
 
             ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
             commit_username: H3CoF6

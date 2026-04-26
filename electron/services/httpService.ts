@@ -26,7 +26,7 @@ interface ChatLabHeader {
 interface ChatLabMeta {
   name: string
   platform: string
-  type: 'group' | 'private'
+  type: ApiSessionType
   groupId?: string
   groupAvatar?: string
   ownerId?: string
@@ -68,6 +68,7 @@ interface ApiMediaOptions {
 }
 
 type MediaKind = 'image' | 'voice' | 'video' | 'emoji'
+type ApiSessionType = 'group' | 'private' | 'channel' | 'other'
 
 interface ApiExportedMedia {
   kind: MediaKind
@@ -781,6 +782,17 @@ class HttpService {
     }
   }
 
+  private getApiSessionType(username: string): ApiSessionType {
+    const normalized = String(username || '').trim()
+    const lowered = normalized.toLowerCase()
+    if (!normalized) return 'other'
+    if (lowered.endsWith('@chatroom')) return 'group'
+    if (lowered.startsWith('gh_')) return 'channel'
+    if (lowered.includes('@openim')) return 'channel'
+    if (lowered.startsWith('weixin') && lowered !== 'weixin') return 'channel'
+    return 'private'
+  }
+
   private async handleMessages(url: URL, res: http.ServerResponse): Promise<void> {
     const talker = (url.searchParams.get('talker') || '').trim()
     const limit = this.parseIntParam(url.searchParams.get('limit'), 100, 1, 10000)
@@ -910,7 +922,7 @@ class HttpService {
             id: s.username,
             name: s.displayName || s.username,
             platform: 'wechat',
-            type: s.username.endsWith('@chatroom') ? 'group' : 'private',
+            type: this.getApiSessionType(s.username),
             messageCount: s.messageCountHint || undefined,
             lastMessageAt: s.lastTimestamp
           }))
@@ -925,6 +937,7 @@ class HttpService {
           username: s.username,
           displayName: s.displayName,
           type: s.type,
+          sessionType: this.getApiSessionType(s.username),
           lastTimestamp: s.lastTimestamp,
           unreadCount: s.unreadCount
         }))
@@ -1532,7 +1545,7 @@ class HttpService {
           talker,
           String(msg.localId),
           msg.createTime || undefined,
-          msg.serverId || undefined
+          this.getMessageServerId(msg) || undefined
         )
         if (result.success && result.data) {
           const fileName = `voice_${msg.localId}.wav`
@@ -1586,9 +1599,11 @@ class HttpService {
   }
 
   private toApiMessage(msg: Message, media?: ApiExportedMedia): Record<string, any> {
+    const serverId = this.getMessageServerId(msg)
+
     return {
       localId: msg.localId,
-      serverId: msg.serverId,
+      serverId: serverId || '0',
       localType: msg.localType,
       createTime: msg.createTime,
       sortSeq: msg.sortSeq,
@@ -1602,6 +1617,27 @@ class HttpService {
       mediaUrl: media ? `http://${this.host}:${this.port}/api/v1/media/${media.relativePath}` : undefined,
       mediaLocalPath: media?.fullPath
     }
+  }
+
+  private getMessageServerId(msg: Message): string {
+    const raw = this.normalizeUnsignedIntToken(msg.serverIdRaw)
+    if (raw && raw !== '0') return raw
+
+    const fallback = this.normalizeUnsignedIntToken(msg.serverId)
+    return fallback && fallback !== '0' ? fallback : ''
+  }
+
+  private normalizeUnsignedIntToken(value: unknown): string {
+    if (value === null || value === undefined) return ''
+    const text = String(value).trim()
+    if (!text) return ''
+    if (/^\d+$/.test(text)) {
+      return text.replace(/^0+(?=\d)/, '')
+    }
+
+    const numeric = Number(value)
+    if (!Number.isFinite(numeric) || numeric <= 0) return ''
+    return String(Math.floor(numeric))
   }
 
   /**
@@ -1868,7 +1904,7 @@ class HttpService {
         timestamp: msg.createTime,
         type: this.mapMessageType(msg.localType, msg),
         content: this.getMessageContent(msg),
-        platformMessageId: msg.serverId ? String(msg.serverId) : undefined,
+        platformMessageId: this.getMessageServerId(msg) || undefined,
         mediaPath: mediaMap.get(msg.localId) ? `http://${this.host}:${this.port}/api/v1/media/${mediaMap.get(msg.localId)!.relativePath}` : undefined
       }
     })
@@ -1882,7 +1918,7 @@ class HttpService {
       meta: {
         name: talkerName,
         platform: 'wechat',
-        type: isGroup ? 'group' : 'private',
+        type: this.getApiSessionType(talkerId),
         groupId: isGroup ? talkerId : undefined,
         groupAvatar: isGroup ? sessionAvatarInfo?.avatarUrl : undefined,
         ownerId: myWxid || undefined
@@ -2045,6 +2081,12 @@ class HttpService {
    * 获取消息内容
    */
   private getMessageContent(msg: Message): string | null {
+    const normalizeTextContent = (value: string | null | undefined): string | null => {
+      const text = String(value || '')
+      if (!text) return null
+      return text.replace(/^[\s]*([a-zA-Z0-9_@-]+):(?!\/\/)(?:\s*(?:\r?\n|<br\s*\/?>)\s*|\s*)/i, '').trim()
+    }
+
     if (msg.localType === 49) {
       return this.getType49Content(msg)
     }
@@ -2057,7 +2099,7 @@ class HttpService {
     // 根据类型返回占位符
     switch (msg.localType) {
       case 1:
-        return msg.rawContent || null
+        return normalizeTextContent(msg.parsedContent || msg.rawContent)
       case 3:
         return '[图片]'
       case 34:
@@ -2073,7 +2115,7 @@ class HttpService {
       case 49:
         return this.getType49Content(msg)
       default:
-        return msg.rawContent || null
+        return normalizeTextContent(msg.parsedContent || msg.rawContent) || null
     }
   }
 

@@ -15,6 +15,7 @@ export const CONFIG_KEYS = {
   WINDOW_BOUNDS: 'windowBounds',
   CACHE_PATH: 'cachePath',
   LAUNCH_AT_STARTUP: 'launchAtStartup',
+  SILENT_STARTUP: 'silentStartup',
 
   EXPORT_PATH: 'exportPath',
   AGREEMENT_ACCEPTED: 'agreementAccepted',
@@ -319,6 +320,17 @@ export async function getLaunchAtStartup(): Promise<boolean | null> {
 // 设置开机自启动偏好
 export async function setLaunchAtStartup(enabled: boolean): Promise<void> {
   await config.set(CONFIG_KEYS.LAUNCH_AT_STARTUP, enabled)
+}
+
+// 获取静默启动偏好
+export async function getSilentStartup(): Promise<boolean> {
+  const value = await config.get(CONFIG_KEYS.SILENT_STARTUP)
+  return value === true
+}
+
+// 设置静默启动偏好
+export async function setSilentStartup(enabled: boolean): Promise<void> {
+  await config.set(CONFIG_KEYS.SILENT_STARTUP, enabled)
 }
 
 // 获取 LLM 模型路径

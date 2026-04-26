@@ -5,6 +5,7 @@ interface ExportWorkerConfig {
   sessionIds: string[]
   outputDir: string
   options: ExportOptions
+  taskId?: string
   dbPath?: string
   decryptKey?: string
   myWxid?: string
@@ -14,6 +15,27 @@ interface ExportWorkerConfig {
 }
 
 const config = workerData as ExportWorkerConfig
+const controlState = {
+  pauseRequested: false,
+  stopRequested: false
+}
+
+parentPort?.on('message', (message: any) => {
+  if (!message || typeof message.type !== 'string') return
+  if (message.type === 'export:pause') {
+    controlState.pauseRequested = true
+    return
+  }
+  if (message.type === 'export:resume') {
+    controlState.pauseRequested = false
+    return
+  }
+  if (message.type === 'export:cancel') {
+    controlState.stopRequested = true
+    controlState.pauseRequested = false
+  }
+})
+
 process.env.WEFLOW_WORKER = '1'
 if (config.resourcesPath) {
   process.env.WCDB_RESOURCES_PATH = config.resourcesPath
@@ -47,7 +69,19 @@ async function run() {
         type: 'export:progress',
         data: progress
       })
-    }
+    },
+    config.taskId
+      ? {
+          shouldPause: () => controlState.pauseRequested,
+          shouldStop: () => controlState.stopRequested,
+          recordCreatedFile: (filePath: string) => {
+            parentPort?.postMessage({ type: 'export:createdFile', filePath })
+          },
+          recordCreatedDir: (dirPath: string) => {
+            parentPort?.postMessage({ type: 'export:createdDir', dirPath })
+          }
+        }
+      : undefined
   )
 
   parentPort?.postMessage({

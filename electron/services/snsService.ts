@@ -1340,6 +1340,8 @@ class SnsService {
     }, progressCallback?: (progress: { current: number; total: number; status: string }) => void, control?: {
         shouldPause?: () => boolean
         shouldStop?: () => boolean
+        recordCreatedFile?: (filePath: string) => void
+        recordCreatedDir?: (dirPath: string) => void
     }): Promise<{ success: boolean; filePath?: string; postCount?: number; mediaCount?: number; paused?: boolean; stopped?: boolean; error?: string }> {
         const { outputDir, format, usernames, keyword, startTime, endTime } = options
         const hasExplicitMediaSelection =
@@ -1361,6 +1363,18 @@ class SnsService {
             if (control?.shouldPause?.()) return 'paused'
             return null
         }
+        const ensureExportDir = (dirPath: string) => {
+            const existed = existsSync(dirPath)
+            if (!existed) {
+                mkdirSync(dirPath, { recursive: true })
+                control?.recordCreatedDir?.(dirPath)
+            }
+        }
+        const recordCreatedFileBeforeWrite = (filePath: string) => {
+            if (!existsSync(filePath)) {
+                control?.recordCreatedFile?.(filePath)
+            }
+        }
         const buildInterruptedResult = (state: 'paused' | 'stopped', postCount: number, mediaCount: number) => (
             state === 'stopped'
                 ? { success: true, stopped: true, filePath: '', postCount, mediaCount }
@@ -1369,9 +1383,7 @@ class SnsService {
 
         try {
             // 确保输出目录存在
-            if (!existsSync(outputDir)) {
-                mkdirSync(outputDir, { recursive: true })
-            }
+            ensureExportDir(outputDir)
 
             // 1. 分页加载全部帖子
             const allPosts: SnsPost[] = []
@@ -1414,9 +1426,7 @@ class SnsService {
             const mediaDir = join(outputDir, 'media')
 
             if (shouldExportMedia) {
-                if (!existsSync(mediaDir)) {
-                    mkdirSync(mediaDir, { recursive: true })
-                }
+                ensureExportDir(mediaDir)
 
                 // 收集所有媒体下载任务
                 const mediaTasks: Array<{
@@ -1485,6 +1495,7 @@ class SnsService {
                         } else {
                             const result = await this.fetchAndDecryptImage(task.url, task.key)
                             if (result.success && result.data) {
+                                recordCreatedFileBeforeWrite(filePath)
                                 await writeFile(filePath, result.data)
                                 if (task.kind === 'livephoto') {
                                     if (media.livePhoto) (media.livePhoto as any).localPath = `media/${fileName}`
@@ -1494,6 +1505,7 @@ class SnsService {
                                 mediaCount++
                             } else if (result.success && result.cachePath) {
                                 const cachedData = await readFile(result.cachePath)
+                                recordCreatedFileBeforeWrite(filePath)
                                 await writeFile(filePath, cachedData)
                                 if (task.kind === 'livephoto') {
                                     if (media.livePhoto) (media.livePhoto as any).localPath = `media/${fileName}`
@@ -1531,7 +1543,7 @@ class SnsService {
             // 2.5 下载头像
             const avatarMap = new Map<string, string>()
             if (format === 'html') {
-                if (!existsSync(mediaDir)) mkdirSync(mediaDir, { recursive: true })
+                ensureExportDir(mediaDir)
                 const uniqueUsers = [...new Map(allPosts.filter(p => p.avatarUrl).map(p => [p.username, p])).values()]
                 let avatarDone = 0
                 const avatarQueue = [...uniqueUsers]
@@ -1548,6 +1560,7 @@ class SnsService {
                             } else {
                                 const result = await this.fetchAndDecryptImage(post.avatarUrl!)
                                 if (result.success && result.data) {
+                                    recordCreatedFileBeforeWrite(filePath)
                                     await writeFile(filePath, result.data)
                                     avatarMap.set(post.username, `media/${fileName}`)
                                 }
@@ -1602,6 +1615,7 @@ class SnsService {
                         linkUrl: (p as any).linkUrl
                     }))
                 }
+                recordCreatedFileBeforeWrite(outputFilePath)
                 await writeFile(outputFilePath, JSON.stringify(exportData, null, 2), 'utf-8')
             } else if (format === 'arkmejson') {
                 outputFilePath = join(outputDir, `朋友圈导出_${timestamp}.json`)
@@ -1689,11 +1703,13 @@ class SnsService {
                     },
                     posts
                 }
+                recordCreatedFileBeforeWrite(outputFilePath)
                 await writeFile(outputFilePath, JSON.stringify(exportData, null, 2), 'utf-8')
             } else {
                 // HTML 格式
                 outputFilePath = join(outputDir, `朋友圈导出_${timestamp}.html`)
                 const html = this.generateHtml(allPosts, { usernames, keyword }, avatarMap)
+                recordCreatedFileBeforeWrite(outputFilePath)
                 await writeFile(outputFilePath, html, 'utf-8')
             }
 

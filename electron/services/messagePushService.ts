@@ -1325,13 +1325,19 @@ class MessagePushService {
   }
 
   private getMessageDisplayContent(message: Message): string | null {
+    const normalizeTextContent = (value: string | null | undefined): string | null => {
+      const text = String(value || '')
+      if (!text) return null
+      return text.replace(/^[\s]*([a-zA-Z0-9_@-]+):(?!\/\/)(?:\s*(?:\r?\n|<br\s*\/?>)\s*|\s*)/i, '').trim()
+    }
+
     const cleanOfficialPrefix = (value: string | null): string | null => {
       if (!value) return value
       return value.replace(/^\s*\[视频号\]\s*/u, '').trim() || value
     }
     switch (Number(message.localType || 0)) {
       case 1:
-        return cleanOfficialPrefix(message.rawContent || null)
+        return cleanOfficialPrefix(normalizeTextContent(message.parsedContent || message.rawContent))
       case 3:
         return '[图片]'
       case 34:
@@ -1347,7 +1353,7 @@ class MessagePushService {
       case 49:
         return cleanOfficialPrefix(message.linkTitle || message.fileName || '[消息]')
       default:
-        return cleanOfficialPrefix(message.parsedContent || message.rawContent || null)
+        return cleanOfficialPrefix(normalizeTextContent(message.parsedContent || message.rawContent) || null)
     }
   }
 

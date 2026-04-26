@@ -707,7 +707,7 @@ export class KeyServiceMac {
     }
     if (code === 'HOOK_FAILED') {
       if (normalizedDetail.includes('HOOK_TIMEOUT')) {
-        return 'Hook 已安装，但在等待时间内未触发目标函数。请保持微信前台并执行一次会话/数据库访问后重试。'
+        return 'Hook 已安装，但在等待时间内未触发登录流程。请退出微信账号后重新登录，或在未登录状态下直接登录微信，完成一次登录流程后重试。'
       }
       if (normalizedDetail.includes('attach_wait_timeout')) {
         return '附加调试器超时，未能进入 Hook 阶段。请确认微信处于可交互状态并重试。'

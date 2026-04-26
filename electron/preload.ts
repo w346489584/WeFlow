@@ -154,6 +154,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   },
 
+  backup: {
+    create: (payload: { outputPath: string; options?: { includeImages?: boolean; includeVideos?: boolean; includeFiles?: boolean } }) => ipcRenderer.invoke('backup:create', payload),
+    inspect: (payload: { archivePath: string }) => ipcRenderer.invoke('backup:inspect', payload),
+    restore: (payload: { archivePath: string }) => ipcRenderer.invoke('backup:restore', payload),
+    onProgress: (callback: (progress: any) => void) => {
+      const listener = (_: unknown, progress: any) => callback(progress)
+      ipcRenderer.on('backup:progress', listener)
+      return () => ipcRenderer.removeListener('backup:progress', listener)
+    }
+  },
+
   // 密钥获取
   key: {
     autoGetDbKey: () => ipcRenderer.invoke('key:autoGetDbKey'),
@@ -174,6 +185,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   chat: {
     connect: () => ipcRenderer.invoke('chat:connect'),
     getSessions: () => ipcRenderer.invoke('chat:getSessions'),
+    getAntiRevokeSessions: () => ipcRenderer.invoke('chat:getAntiRevokeSessions'),
     getSessionStatuses: (usernames: string[]) => ipcRenderer.invoke('chat:getSessionStatuses', usernames),
     getExportTabCounts: () => ipcRenderer.invoke('chat:getExportTabCounts'),
     getContactTypeCounts: () => ipcRenderer.invoke('chat:getContactTypeCounts'),
@@ -451,8 +463,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
   export: {
     getExportStats: (sessionIds: string[], options: any) =>
       ipcRenderer.invoke('export:getExportStats', sessionIds, options),
-    exportSessions: (sessionIds: string[], outputDir: string, options: any) =>
-      ipcRenderer.invoke('export:exportSessions', sessionIds, outputDir, options),
+    exportSessions: (sessionIds: string[], outputDir: string, options: any, controlOptions?: { taskId?: string }) =>
+      ipcRenderer.invoke('export:exportSessions', sessionIds, outputDir, options, controlOptions),
+    pauseTask: (taskId: string) =>
+      ipcRenderer.invoke('export:pauseTask', taskId),
+    resumeTask: (taskId: string) =>
+      ipcRenderer.invoke('export:resumeTask', taskId),
+    cancelTask: (taskId: string) =>
+      ipcRenderer.invoke('export:cancelTask', taskId),
     exportSession: (sessionId: string, outputPath: string, options: any) =>
       ipcRenderer.invoke('export:exportSession', sessionId, outputPath, options),
     exportContacts: (outputDir: string, options: any) =>

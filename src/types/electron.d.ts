@@ -21,6 +21,88 @@ export interface SocialSaveWeiboCookieResult {
   error?: string
 }
 
+export interface BackupProgress {
+  phase: 'preparing' | 'scanning' | 'exporting' | 'packing' | 'inspecting' | 'restoring' | 'done' | 'failed'
+  message: string
+  current?: number
+  total?: number
+  detail?: string
+}
+
+export interface BackupOptions {
+  includeImages?: boolean
+  includeVideos?: boolean
+  includeFiles?: boolean
+}
+
+export interface BackupImageDatMeta {
+  version?: number
+  aesSize?: number
+  aes_size?: number
+  xorSize?: number
+  xor_size?: number
+  rawSize?: number
+  raw_size?: number
+  flag?: number
+}
+
+export interface BackupManifest {
+  version: 1
+  type: 'weflow-db-snapshots'
+  createdAt: string
+  appVersion: string
+  source: {
+    wxid: string
+    dbRoot: string
+  }
+  options?: BackupOptions
+  databases: Array<{
+    id: string
+    kind: 'session' | 'contact' | 'emoticon' | 'message' | 'media' | 'sns' | 'hardlink'
+    dbPath: string
+    relativePath: string
+    tables: Array<{
+      name: string
+      snapshotPath: string
+      rows: number
+      columns: number
+      schemaSql?: string
+    }>
+  }>
+  resources?: {
+    images?: Array<{
+      kind: 'image' | 'video' | 'file'
+      id: string
+      md5?: string
+      sessionId?: string
+      createTime?: number
+      sourceFileName?: string
+      archivePath: string
+      targetRelativePath: string
+      ext?: string
+      size?: number
+      datMeta?: BackupImageDatMeta
+    }>
+    videos?: Array<{
+      kind: 'image' | 'video' | 'file'
+      id: string
+      md5?: string
+      sourceFileName?: string
+      archivePath: string
+      targetRelativePath: string
+      size?: number
+    }>
+    files?: Array<{
+      kind: 'image' | 'video' | 'file'
+      id: string
+      sourceFileName?: string
+      archivePath: string
+      targetRelativePath: string
+      size?: number
+    }>
+  }
+}
+
 export interface ElectronAPI {
   window: {
     minimize: () => void
@@ -158,6 +240,27 @@ export interface ElectronAPI {
     close: () => Promise<boolean>
 
   }
+  backup: {
+    create: (payload: { outputPath: string; options?: BackupOptions }) => Promise<{
+      success: boolean
+      filePath?: string
+      manifest?: BackupManifest
+      error?: string
+    }>
+    inspect: (payload: { archivePath: string }) => Promise<{
+      success: boolean
+      manifest?: BackupManifest
+      error?: string
+    }>
+    restore: (payload: { archivePath: string }) => Promise<{
+      success: boolean
+      inserted?: number
+      ignored?: number
+      skipped?: number
+      error?: string
+    }>
+    onProgress: (callback: (progress: BackupProgress) => void) => () => void
+  }
   key: {
     autoGetDbKey: () => Promise<{ success: boolean; key?: string; error?: string; logs?: string[] }>
     autoGetImageKey: (manualDir?: string, wxid?: string) => Promise<{ success: boolean; xorKey?: number; aesKey?: string; verified?: boolean; error?: string }>
@@ -168,6 +271,7 @@ export interface ElectronAPI {
   chat: {
     connect: () => Promise<{ success: boolean; error?: string }>
     getSessions: () => Promise<{ success: boolean; sessions?: ChatSession[]; error?: string }>
+    getAntiRevokeSessions: () => Promise<{ success: boolean; sessions?: ChatSession[]; error?: string }>
     getSessionStatuses: (usernames: string[]) => Promise<{
       success: boolean
       map?: Record<string, { isFolded?: boolean; isMuted?: boolean }>
@@ -988,16 +1092,21 @@ export interface ElectronAPI {
       estimatedSeconds: number
       sessions: Array<{ sessionId: string; displayName: string; totalCount: number; voiceCount: number }>
     }>
-    exportSessions: (sessionIds: string[], outputDir: string, options: ExportOptions) => Promise<{
+    exportSessions: (sessionIds: string[], outputDir: string, options: ExportOptions, controlOptions?: { taskId?: string }) => Promise<{
       success: boolean
       successCount?: number
       failCount?: number
+      paused?: boolean
+      stopped?: boolean
       pendingSessionIds?: string[]
       successSessionIds?: string[]
       failedSessionIds?: string[]
       sessionOutputPaths?: Record<string, string>
       error?: string
     }>
+    pauseTask: (taskId: string) => Promise<{ success: boolean; error?: string }>
+    resumeTask: (taskId: string) => Promise<{ success: boolean; error?: string }>
+    cancelTask: (taskId: string) => Promise<{ success: boolean; error?: string }>
     exportSession: (sessionId: string, outputPath: string, options: ExportOptions) => Promise<{
       success: boolean
       error?: string
@@ -1070,7 +1179,8 @@ export interface ElectronAPI {
       exportVideos?: boolean
       startTime?: number
       endTime?: number
-    }) => Promise<{ success: boolean; filePath?: string; postCount?: number; mediaCount?: number; error?: string }>
+      taskId?: string
+    }) => Promise<{ success: boolean; filePath?: string; postCount?: number; mediaCount?: number; paused?: boolean; stopped?: boolean; error?: string }>
     onExportProgress: (callback: (payload: { current: number; total: number; status: string }) => void) => () => void
     selectExportDir: () => Promise<{ canceled: boolean; filePath?: string }>
     getSnsUsernames: () => Promise<{ success: boolean; usernames?: string[]; error?: string }>
@@ -1220,4 +1330,3 @@ declare global {
 }
 
 export { }
-

@@ -27,6 +27,7 @@ import ResourcesPage from './pages/ResourcesPage'
 import ChatHistoryPage from './pages/ChatHistoryPage'
 import NotificationWindow from './pages/NotificationWindow'
 import AccountManagementPage from './pages/AccountManagementPage'
+import BackupPage from './pages/BackupPage'
 
 import { useAppStore } from './stores/appStore'
 import { themes, useThemeStore, type ThemeId, type ThemeMode } from './stores/themeStore'
@@ -705,6 +706,7 @@ function App() {
               <Route path="/biz" element={<BizPage />} />
               <Route path="/contacts" element={<ContactsPage />} />
               <Route path="/resources" element={<ResourcesPage />} />
+              <Route path="/backup" element={<BackupPage />} />
               <Route path="/chat-history/:sessionId/:messageId" element={<ChatHistoryPage />} />
               <Route path="/chat-history-inline/:payloadId" element={<ChatHistoryPage />} />
             </Routes>

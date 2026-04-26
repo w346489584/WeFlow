@@ -43,7 +43,7 @@
     "remark-gfm": "^4.0.1",
     "sherpa-onnx-node": "^1.10.38",
     "silk-wasm": "^3.7.1",
-    "sudo-prompt": "^9.2.1",
+    "@vscode/sudo-prompt": "^9.3.2",
     "wechat-emojis": "^1.0.2",
     "zustand": "^5.0.2"
   },

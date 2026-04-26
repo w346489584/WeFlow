@@ -36,6 +36,7 @@ interface ConfigSchema {
   language: string
   logEnabled: boolean
   launchAtStartup?: boolean
+  silentStartup?: boolean
   llmModelPath: string
   whisperModelName: string
   whisperModelDir: string
@@ -163,6 +164,7 @@ export class ConfigService {
       themeId: 'cloud-dancer',
       language: 'zh-CN',
       logEnabled: false,
+      silentStartup: false,
       llmModelPath: '',
       whisperModelName: 'base',
       whisperModelDir: '',

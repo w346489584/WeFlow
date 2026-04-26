@@ -6,10 +6,30 @@ type NativeDecryptResult = {
   ext: string
   isWxgf?: boolean
   is_wxgf?: boolean
+  version?: number
+  aesSize?: number
+  aes_size?: number
+  xorSize?: number
+  xor_size?: number
+  rawSize?: number
+  raw_size?: number
+  flag?: number
+}
+
+export type NativeDatMeta = {
+  version?: number
+  aesSize?: number
+  aes_size?: number
+  xorSize?: number
+  xor_size?: number
+  rawSize?: number
+  raw_size?: number
+  flag?: number
 }
 
 type NativeAddon = {
   decryptDatNative: (inputPath: string, xorKey: number, aesKey?: string) => NativeDecryptResult
+  encryptDatNative?: (inputPath: string, xorKey: number, aesKey?: string, meta?: NativeDatMeta) => Buffer
 }
 
 let cachedAddon: NativeAddon | null | undefined
@@ -91,7 +111,7 @@ export function decryptDatViaNative(
   inputPath: string,
   xorKey: number,
   aesKey?: string
-): { data: Buffer; ext: string; isWxgf: boolean } | null {
+): { data: Buffer; ext: string; isWxgf: boolean; meta: NativeDatMeta } | null {
   const addon = loadAddon()
   if (!addon) return null
 
@@ -103,7 +123,31 @@ export function decryptDatViaNative(
       ? result.ext.trim().toLowerCase()
       : ''
     const ext = rawExt ? (rawExt.startsWith('.') ? rawExt : `.${rawExt}`) : ''
-    return { data: result.data, ext, isWxgf }
+    const meta: NativeDatMeta = {
+      version: result.version,
+      aes_size: result.aes_size ?? result.aesSize,
+      xor_size: result.xor_size ?? result.xorSize,
+      raw_size: result.raw_size ?? result.rawSize,
+      flag: result.flag
+    }
+    return { data: result.data, ext, isWxgf, meta }
+  } catch {
+    return null
+  }
+}
+
+export function encryptDatViaNative(
+  inputPath: string,
+  xorKey: number,
+  aesKey?: string,
+  meta?: NativeDatMeta
+): Buffer | null {
+  const addon = loadAddon()
+  if (!addon || typeof addon.encryptDatNative !== 'function') return null
+
+  try {
+    const result = addon.encryptDatNative(inputPath, xorKey, aesKey, meta)
+    return Buffer.isBuffer(result) ? result : null
   } catch {
     return null
   }

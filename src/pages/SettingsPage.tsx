@@ -6,7 +6,7 @@ import { useThemeStore, themes } from '../stores/themeStore'
 import { useAnalyticsStore } from '../stores/analyticsStore'
 import { dialog } from '../services/ipc'
 import * as configService from '../services/config'
-import type { ContactInfo } from '../types/models'
+import type { ChatSession, ContactInfo } from '../types/models'
 import {
   Eye, EyeOff, FolderSearch, FolderOpen, Search, Copy,
   RotateCcw, Trash2, Plug, Check, Sun, Moon, Monitor,
@@ -195,6 +195,7 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
   const [launchAtStartup, setLaunchAtStartup] = useState(false)
   const [launchAtStartupSupported, setLaunchAtStartupSupported] = useState(isWindows || isMac)
   const [launchAtStartupReason, setLaunchAtStartupReason] = useState('')
+  const [silentStartup, setSilentStartup] = useState(false)
   const [windowCloseBehavior, setWindowCloseBehavior] = useState<configService.WindowCloseBehavior>('ask')
   const [quoteLayout, setQuoteLayout] = useState<configService.QuoteLayout>('quote-top')
   const [updateChannel, setUpdateChannel] = useState<configService.UpdateChannel>('stable')
@@ -222,6 +223,7 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
   const [isFetchingImageKey, setIsFetchingImageKey] = useState(false)
   const [isCheckingUpdate, setIsCheckingUpdate] = useState(false)
   const [isUpdatingLaunchAtStartup, setIsUpdatingLaunchAtStartup] = useState(false)
+  const [isUpdatingSilentStartup, setIsUpdatingSilentStartup] = useState(false)
   const [appVersion, setAppVersion] = useState('')
   const [message, setMessage] = useState<{ text: string; success: boolean } | null>(null)
   const [showDecryptKey, setShowDecryptKey] = useState(false)
@@ -263,6 +265,7 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
   const [messagePushFilterSearchKeyword, setMessagePushFilterSearchKeyword] = useState('')
   const [messagePushTypeFilter, setMessagePushTypeFilter] = useState<SessionFilterTypeValue>('all')
   const [messagePushContactOptions, setMessagePushContactOptions] = useState<ContactInfo[]>([])
+  const [antiRevokeSessions, setAntiRevokeSessions] = useState<ChatSession[]>([])
   const [antiRevokeSearchKeyword, setAntiRevokeSearchKeyword] = useState('')
   const [antiRevokeSelectedIds, setAntiRevokeSelectedIds] = useState<Set<string>>(new Set())
   const [antiRevokeStatusMap, setAntiRevokeStatusMap] = useState<Record<string, { installed?: boolean; loading?: boolean; error?: string }>>({})
@@ -445,6 +448,7 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
       const savedMessagePushFilterList = await configService.getMessagePushFilterList()
       const contactsResult = await window.electronAPI.chat.getContacts({ lite: true })
       const savedLaunchAtStartupStatus = await window.electronAPI.app.getLaunchAtStartupStatus()
+      const savedSilentStartup = await configService.getSilentStartup()
       const savedWindowCloseBehavior = await configService.getWindowCloseBehavior()
       const savedQuoteLayout = await configService.getQuoteLayout()
       const savedUpdateChannel = await configService.getUpdateChannel()
@@ -502,6 +506,7 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
       setLaunchAtStartup(savedLaunchAtStartupStatus.enabled)
       setLaunchAtStartupSupported(savedLaunchAtStartupStatus.supported)
       setLaunchAtStartupReason(savedLaunchAtStartupStatus.reason || '')
+      setSilentStartup(savedSilentStartup)
       setWindowCloseBehavior(savedWindowCloseBehavior)
       setQuoteLayout(savedQuoteLayout)
       if (savedUpdateChannel) {
@@ -612,6 +617,21 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
       showMessage(`设置开机自启动失败: ${e?.message || String(e)}`, false)
     } finally {
       setIsUpdatingLaunchAtStartup(false)
+    }
+  }
+
+  const handleSilentStartupChange = async (enabled: boolean) => {
+    if (isUpdatingSilentStartup) return
+
+    try {
+      setIsUpdatingSilentStartup(true)
+      await configService.setSilentStartup(enabled)
+      setSilentStartup(enabled)
+      showMessage(enabled ? '已开启静默启动' : '已关闭静默启动', true)
+    } catch (e: any) {
+      showMessage(`设置静默启动失败: ${e?.message || String(e)}`, false)
+    } finally {
+      setIsUpdatingSilentStartup(false)
     }
   }
 
@@ -752,10 +772,10 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
     Array.from(new Set((sessionIds || []).map((id) => String(id || '').trim()).filter(Boolean)))
 
   const getCurrentAntiRevokeSessionIds = (): string[] =>
-    normalizeSessionIds(chatSessions.map((session) => session.username))
+    normalizeSessionIds(antiRevokeSessions.map((session) => session.username))
 
-  const ensureAntiRevokeSessionsLoaded = async (): Promise<string[]> => {
-    const current = getCurrentAntiRevokeSessionIds()
+  const ensureChatSessionsLoaded = async (): Promise<string[]> => {
+    const current = normalizeSessionIds(chatSessions.map((session) => session.username))
     if (current.length > 0) return current
     const sessionsResult = await window.electronAPI.chat.getSessions()
     if (!sessionsResult.success || !sessionsResult.sessions) {
@@ -763,6 +783,27 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
     }
     setChatSessions(sessionsResult.sessions)
     return normalizeSessionIds(sessionsResult.sessions.map((session) => session.username))
+  }
+
+  const ensureAntiRevokeSessionsLoaded = async (): Promise<string[]> => {
+    const current = getCurrentAntiRevokeSessionIds()
+    if (current.length > 0) return current
+    const sessionsResult = await window.electronAPI.chat.getAntiRevokeSessions()
+    if (!sessionsResult.success || !sessionsResult.sessions) {
+      throw new Error(sessionsResult.error || '加载会话失败')
+    }
+    const nextSessions = sessionsResult.sessions
+    const nextIds = normalizeSessionIds(nextSessions.map((session) => session.username))
+    setAntiRevokeSessions(nextSessions)
+    setAntiRevokeSelectedIds((prev) => {
+      const allowed = new Set(nextIds)
+      return new Set(Array.from(prev).filter((sessionId) => allowed.has(sessionId)))
+    })
+    setAntiRevokeStatusMap((prev) => {
+      const allowed = new Set(nextIds)
+      return Object.fromEntries(Object.entries(prev).filter(([sessionId]) => allowed.has(sessionId)))
+    })
+    return nextIds
   }
 
   const markAntiRevokeRowsLoading = (sessionIds: string[]) => {
@@ -976,11 +1017,10 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
     let canceled = false
     ;(async () => {
       try {
-        // 两个 Tab 都需要会话列表；antiRevoke 还需要额外检查防撤回状态
-        const sessionIds = await ensureAntiRevokeSessionsLoaded()
-        if (canceled) return
         if (activeTab === 'antiRevoke') {
-          await handleRefreshAntiRevokeStatus(sessionIds)
+          await ensureAntiRevokeSessionsLoaded()
+        } else {
+          await ensureChatSessionsLoaded()
         }
       } catch (e: any) {
         if (!canceled) {
@@ -1685,6 +1725,35 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
       <div className="divider" />
 
       <div className="form-group">
+        <label>静默启动</label>
+        <span className="form-hint">
+          开启后，无论手动启动还是开机自启动，都会先驻留到系统托盘，不主动显示主窗口。
+        </span>
+        <div className="log-toggle-line">
+          <span className="log-status">
+            {isUpdatingSilentStartup
+              ? '保存中...'
+              : (silentStartup ? '已开启' : '已关闭')}
+          </span>
+          <label className="switch" htmlFor="silent-startup-toggle">
+            <input
+              id="silent-startup-toggle"
+              className="switch-input"
+              type="checkbox"
+              checked={silentStartup}
+              disabled={isUpdatingSilentStartup}
+              onChange={(e) => {
+                void handleSilentStartupChange(e.target.checked)
+              }}
+            />
+            <span className="switch-slider" />
+          </label>
+        </div>
+      </div>
+
+      <div className="divider" />
+
+      <div className="form-group">
         <label>关闭主窗口时</label>
         <span className="form-hint">设置点击关闭按钮后的默认行为；选择“每次询问”时会弹出关闭确认。</span>
         <div className="custom-select">
@@ -1982,7 +2051,7 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
   }
 
   const renderAntiRevokeTab = () => {
-    const sortedSessions = [...chatSessions].sort((a, b) => (b.sortTimestamp || 0) - (a.sortTimestamp || 0))
+    const sortedSessions = [...antiRevokeSessions].sort((a, b) => (b.sortTimestamp || 0) - (a.sortTimestamp || 0))
     const keyword = antiRevokeSearchKeyword.trim().toLowerCase()
     const filteredSessions = sortedSessions.filter((session) => {
       if (!keyword) return true
@@ -4747,7 +4816,6 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
 }
 
 export default SettingsPage
-
 
 
 

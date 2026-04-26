@@ -116,6 +116,21 @@ if (parentPort) {
                 case 'getMessageTableColumns':
                     result = await core.getMessageTableColumns(payload.dbPath, payload.tableName)
                     break
+                case 'listTables':
+                    result = await core.listTables(payload.kind, payload.dbPath)
+                    break
+                case 'getTableSchema':
+                    result = await core.getTableSchema(payload.kind, payload.dbPath, payload.tableName)
+                    break
+                case 'exportTableSnapshot':
+                    result = await core.exportTableSnapshot(payload.kind, payload.dbPath, payload.tableName, payload.outputPath)
+                    break
+                case 'importTableSnapshot':
+                    result = await core.importTableSnapshot(payload.kind, payload.dbPath, payload.tableName, payload.inputPath)
+                    break
+                case 'importTableSnapshotWithSchema':
+                    result = await core.importTableSnapshotWithSchema(payload.kind, payload.dbPath, payload.tableName, payload.inputPath, payload.createTableSql)
+                    break
                 case 'getMessageTableTimeRange':
                     result = await core.getMessageTableTimeRange(payload.dbPath, payload.tableName)
                     break

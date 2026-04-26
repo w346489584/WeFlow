@@ -58,12 +58,26 @@ wait_for_release_id() {
 
   local i
   local release_id
+  local release_api_url
   for ((i = 1; i <= attempts; i++)); do
     release_id="$(gh api "repos/$repo/releases/tags/$tag" --jq '.id' 2>/dev/null || true)"
     if [[ "$release_id" =~ ^[0-9]+$ ]]; then
       echo "$release_id"
       return 0
     fi
+
+    release_id="$(gh release view "$tag" --repo "$repo" --json databaseId --jq '.databaseId // empty' 2>/dev/null || true)"
+    if [[ "$release_id" =~ ^[0-9]+$ ]]; then
+      echo "$release_id"
+      return 0
+    fi
+
+    release_api_url="$(gh release view "$tag" --repo "$repo" --json apiUrl --jq '.apiUrl // empty' 2>/dev/null || true)"
+    if [[ "$release_api_url" =~ /releases/([0-9]+)$ ]]; then
+      echo "${BASH_REMATCH[1]}"
+      return 0
+    fi
+
     if [ "$i" -lt "$attempts" ]; then
       echo "Release id for tag '$tag' is not ready yet (attempt $i/$attempts), retrying in ${delay_seconds}s..." >&2
       sleep "$delay_seconds"
@@ -71,6 +85,7 @@ wait_for_release_id() {
   done
 
   echo "Unable to fetch release id for tag '$tag' after $attempts attempts." >&2
+  gh release view "$tag" --repo "$repo" --json databaseId,id,isDraft,isPrerelease,url 2>/dev/null || true
   gh api "repos/$repo/releases/tags/$tag" --jq '{draft: .draft, prerelease: .prerelease, url: .html_url}' 2>/dev/null || true
   return 1
 }
@@ -87,9 +102,10 @@ settle_release_state() {
   local draft_state
   local prerelease_state
   for ((i = 1; i <= attempts; i++)); do
+    gh release edit "$tag" --repo "$repo" --draft=false --prerelease >/dev/null 2>&1 || true
     gh api --method PATCH "repos/$repo/releases/$release_id" -F draft=false -F prerelease=true >/dev/null 2>&1 || true
-    draft_state="$(gh api "$endpoint" --jq '.draft' 2>/dev/null || echo true)"
-    prerelease_state="$(gh api "$endpoint" --jq '.prerelease' 2>/dev/null || echo false)"
+    draft_state="$(gh api "$endpoint" --jq '.draft' 2>/dev/null || gh release view "$tag" --repo "$repo" --json isDraft --jq '.isDraft' 2>/dev/null || echo true)"
+    prerelease_state="$(gh api "$endpoint" --jq '.prerelease' 2>/dev/null || gh release view "$tag" --repo "$repo" --json isPrerelease --jq '.isPrerelease' 2>/dev/null || echo false)"
     if [ "$draft_state" = "false" ] && [ "$prerelease_state" = "true" ]; then
       return 0
     fi
@@ -100,8 +116,17 @@ settle_release_state() {
   done
 
   echo "Failed to settle release state for tag '$tag'." >&2
+  gh release view "$tag" --repo "$repo" --json isDraft,isPrerelease,url 2>/dev/null || true
   gh api "$endpoint" --jq '{draft: .draft, prerelease: .prerelease, url: .html_url}' 2>/dev/null || true
   return 1
+}
+
+print_release_state() {
+  local repo="$1"
+  local tag="$2"
+
+  gh api "repos/$repo/releases/tags/$tag" --jq '{isDraft: .draft, isPrerelease: .prerelease, url: .html_url}' 2>/dev/null \
+    || gh release view "$tag" --repo "$repo" --json isDraft,isPrerelease,url --jq '{isDraft: .isDraft, isPrerelease: .isPrerelease, url: .url}'
 }
 
 wait_for_release_absent() {

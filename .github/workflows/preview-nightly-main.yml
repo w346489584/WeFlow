@@ -328,6 +328,12 @@ jobs:
     if: needs.prepare.outputs.should_build == 'true' && always()
     runs-on: ubuntu-latest
     steps:
+      - name: Check out git repository
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ env.TARGET_BRANCH }}
+          fetch-depth: 1
+
       - name: Update preview release notes
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -423,4 +429,4 @@ jobs:
           source .github/scripts/release-utils.sh
           RELEASE_REST_ID="$(wait_for_release_id "$REPO" "$TAG" 12 2)"
           settle_release_state "$REPO" "$RELEASE_REST_ID" "$TAG" 12 2
-          gh api "repos/$REPO/releases/tags/$TAG" --jq '{isDraft: .draft, isPrerelease: .prerelease, url: .html_url}'
+          print_release_state "$REPO" "$TAG"

@@ -666,6 +666,9 @@ class ChatService {
     if (this.connected && wcdbService.isReady()) {
       return { success: true }
     }
+    if (!wcdbService.isReady()) {
+      this.monitorSetup = false
+    }
     const result = await this.connect()
     if (!result.success) {
       this.connected = false
@@ -709,6 +712,7 @@ class ChatService {
       console.error('ChatService: 关闭数据库失败:', e)
     }
     this.connected = false
+    this.monitorSetup = false
   }
 
   /**
@@ -745,8 +749,12 @@ class ChatService {
     try {
       const connectResult = await this.ensureConnected()
       if (!connectResult.success) return { success: false, error: connectResult.error }
-      const normalizedIds = Array.from(new Set((sessionIds || []).map((id) => String(id || '').trim()).filter(Boolean)))
-      return await wcdbService.checkMessageAntiRevokeTriggers(normalizedIds)
+      const { validIds, invalidRows } = await this.filterAntiRevokeSessionIds(sessionIds)
+      const result = validIds.length > 0
+        ? await wcdbService.checkMessageAntiRevokeTriggers(validIds)
+        : { success: true, rows: [] }
+      if (!result.success) return result
+      return { success: true, rows: [...(result.rows || []), ...invalidRows] }
     } catch (e) {
       return { success: false, error: String(e) }
     }
@@ -760,8 +768,12 @@ class ChatService {
     try {
       const connectResult = await this.ensureConnected()
       if (!connectResult.success) return { success: false, error: connectResult.error }
-      const normalizedIds = Array.from(new Set((sessionIds || []).map((id) => String(id || '').trim()).filter(Boolean)))
-      return await wcdbService.installMessageAntiRevokeTriggers(normalizedIds)
+      const { validIds, invalidRows } = await this.filterAntiRevokeSessionIds(sessionIds)
+      const result = validIds.length > 0
+        ? await wcdbService.installMessageAntiRevokeTriggers(validIds)
+        : { success: true, rows: [] }
+      if (!result.success) return result
+      return { success: true, rows: [...(result.rows || []), ...invalidRows] }
     } catch (e) {
       return { success: false, error: String(e) }
     }
@@ -775,8 +787,12 @@ class ChatService {
     try {
       const connectResult = await this.ensureConnected()
       if (!connectResult.success) return { success: false, error: connectResult.error }
-      const normalizedIds = Array.from(new Set((sessionIds || []).map((id) => String(id || '').trim()).filter(Boolean)))
-      return await wcdbService.uninstallMessageAntiRevokeTriggers(normalizedIds)
+      const { validIds, invalidRows } = await this.filterAntiRevokeSessionIds(sessionIds)
+      const result = validIds.length > 0
+        ? await wcdbService.uninstallMessageAntiRevokeTriggers(validIds)
+        : { success: true, rows: [] }
+      if (!result.success) return result
+      return { success: true, rows: [...(result.rows || []), ...invalidRows] }
     } catch (e) {
       return { success: false, error: String(e) }
     }
@@ -932,6 +948,191 @@ class ChatService {
       console.error('ChatService: 获取会话列表失败:', e)
       return { success: false, error: String(e) }
     }
+  }
+
+  async getAntiRevokeSessions(): Promise<{ success: boolean; sessions?: ChatSession[]; error?: string }> {
+    try {
+      const result = await this.getSessions()
+      if (!result.success || !Array.isArray(result.sessions)) {
+        return { success: false, error: result.error || '获取会话失败' }
+      }
+
+      return {
+        success: true,
+        sessions: result.sessions.filter((session) => !String(session.username || '').startsWith('gh_'))
+      }
+    } catch (e) {
+      console.error('ChatService: 获取防撤回会话列表失败:', e)
+      return { success: false, error: String(e) }
+    }
+  }
+
+  private getSessionUsername(row: Record<string, any>): string {
+    return String(
+      row.username ||
+      row.user_name ||
+      row.userName ||
+      row.usrName ||
+      row.UsrName ||
+      row.talker ||
+      row.talker_id ||
+      row.talkerId ||
+      ''
+    ).trim()
+  }
+
+  private isAntiRevokeContactRow(username: string, row: Record<string, any>): boolean {
+    if (!username) return false
+    if (username.endsWith('@chatroom')) return true
+    if (username.startsWith('gh_')) return false
+
+    const localType = this.getRowInt(row, ['local_type', 'localType', 'WCDB_CT_local_type'], Number.NaN)
+    const lowered = username.toLowerCase()
+    if (this.isEnterpriseOpenimUsername(username)) {
+      return this.isAllowedEnterpriseOpenimByLocalType(username, localType)
+    }
+    if (lowered.startsWith('weixin') && lowered !== 'weixin') return true
+    return localType === 1 && !FRIEND_EXCLUDE_USERNAMES.has(username)
+  }
+
+  private async loadAntiRevokeContactMap(usernames: string[]): Promise<Map<string, { displayName?: string }>> {
+    const targets = Array.from(new Set((usernames || []).map((value) => String(value || '').trim()).filter(Boolean)))
+    const map = new Map<string, { displayName?: string }>()
+    if (targets.length === 0) return map
+
+    try {
+      const contactResult = await wcdbService.getContactsCompact(targets)
+      if (!contactResult.success || !Array.isArray(contactResult.contacts)) return map
+
+      for (const row of contactResult.contacts as Record<string, any>[]) {
+        const username = String(row.username || '').trim()
+        if (!username || !this.isAntiRevokeContactRow(username, row)) continue
+        map.set(username, {
+          displayName: String(row.remark || row.nick_name || row.nickName || row.alias || username).trim()
+        })
+      }
+    } catch {
+      return map
+    }
+
+    return map
+  }
+
+  private async hasAntiRevokeMessageTables(sessionId: string): Promise<boolean> {
+    try {
+      const tableStatsResult = await wcdbService.getMessageTableStats(sessionId)
+      if (!tableStatsResult.success || !Array.isArray(tableStatsResult.tables)) return false
+      return tableStatsResult.tables.some((row: Record<string, any>) => {
+        const tableName = String(row.table_name || row.tableName || '').trim()
+        return tableName.length > 0
+      })
+    } catch {
+      return false
+    }
+  }
+
+  private async buildAntiRevokeSessionsFromRows(rows: Record<string, any>[]): Promise<ChatSession[]> {
+    if (rows.length > 0 && (rows[0]._error || rows[0]._info)) return []
+
+    const candidateRows: Array<{ username: string; row: Record<string, any> }> = []
+    const privateCandidateIds: string[] = []
+    const openimLocalTypeMap = await this.loadContactLocalTypeMapForEnterpriseOpenim(rows.map((row) => this.getSessionUsername(row)))
+
+    for (const row of rows) {
+      const username = this.getSessionUsername(row)
+      if (!username) continue
+
+      let sessionLocalType = this.getSessionLocalType(row)
+      if (!Number.isFinite(sessionLocalType) && this.isEnterpriseOpenimUsername(username)) {
+        sessionLocalType = openimLocalTypeMap.get(username)
+      }
+      if (!this.shouldKeepSession(username, sessionLocalType)) continue
+
+      if (username.endsWith('@chatroom')) {
+        candidateRows.push({ username, row })
+      } else {
+        privateCandidateIds.push(username)
+        candidateRows.push({ username, row })
+      }
+    }
+
+    const contactMap = await this.loadAntiRevokeContactMap(privateCandidateIds)
+    const sessions: ChatSession[] = []
+    const myWxid = this.configService.get('myWxid')
+    const now = Date.now()
+
+    for (const { username, row } of candidateRows) {
+      const isGroup = username.endsWith('@chatroom')
+      if (!isGroup && !contactMap.has(username)) continue
+      if (!await this.hasAntiRevokeMessageTables(username)) continue
+
+      const sortTs = parseInt(
+        row.sort_timestamp ||
+        row.sortTimestamp ||
+        row.sort_time ||
+        row.sortTime ||
+        '0',
+        10
+      )
+      const lastTs = parseInt(
+        row.last_timestamp ||
+        row.lastTimestamp ||
+        row.last_msg_time ||
+        row.lastMsgTime ||
+        String(sortTs),
+        10
+      )
+      const summary = this.cleanString(row.summary || row.digest || row.last_msg || row.lastMsg || '')
+      const lastMsgType = parseInt(row.last_msg_type || row.lastMsgType || '0', 10)
+      const cached = this.avatarCache.get(username)
+      const contact = contactMap.get(username)
+
+      const session: ChatSession = {
+        username,
+        type: parseInt(row.type || '0', 10),
+        unreadCount: parseInt(row.unread_count || row.unreadCount || row.unreadcount || '0', 10),
+        summary: summary || this.getMessageTypeLabel(lastMsgType),
+        sortTimestamp: sortTs,
+        lastTimestamp: lastTs,
+        lastMsgType,
+        displayName: contact?.displayName || cached?.displayName || username,
+        avatarUrl: cached?.avatarUrl,
+        lastMsgSender: row.last_msg_sender,
+        lastSenderDisplayName: row.last_sender_display_name,
+        selfWxid: myWxid
+      }
+
+      const cachedStatus = this.sessionStatusCache.get(username)
+      if (cachedStatus && now - cachedStatus.updatedAt <= this.sessionStatusCacheTtlMs) {
+        session.isFolded = cachedStatus.isFolded
+        session.isMuted = cachedStatus.isMuted
+      }
+
+      sessions.push(session)
+    }
+
+    return sessions
+  }
+
+  private async filterAntiRevokeSessionIds(sessionIds: string[]): Promise<{
+    validIds: string[]
+    invalidRows: Array<{ sessionId: string; success: false; error: string }>
+  }> {
+    const normalizedIds = Array.from(new Set((sessionIds || []).map((id) => String(id || '').trim()).filter(Boolean)))
+    if (normalizedIds.length === 0) return { validIds: [], invalidRows: [] }
+
+    const sessionsResult = await this.getAntiRevokeSessions()
+    const allowedIds = new Set((sessionsResult.sessions || []).map((session) => session.username))
+    const validIds = normalizedIds.filter((sessionId) => allowedIds.has(sessionId))
+    const invalidRows = normalizedIds
+      .filter((sessionId) => !allowedIds.has(sessionId))
+      .map((sessionId) => ({
+        sessionId,
+        success: false as const,
+        error: '该会话不是联系人或群聊，或不存在可安装防撤回的消息表'
+      }))
+
+    return { validIds, invalidRows }
   }
 
   private async addMissingOfficialSessions(sessions: ChatSession[], myWxid?: string): Promise<void> {
@@ -4609,6 +4810,7 @@ class ChatService {
       const createTime = this.getRowTimestampSeconds(row, ['create_time', 'createTime', 'msg_time', 'msgTime', 'time'], 0)
       const sortSeq = this.getRowInt(row, ['sort_seq'], createTime > 0 ? createTime * 1000 : 0)
       const localId = this.getRowInt(row, ['local_id'], 0)
+      const serverIdRaw = this.normalizeUnsignedIntegerToken(row.server_id)
       const serverId = this.getRowInt(row, ['server_id'], 0)
       const content = this.decodeMessageContent(row.message_content, row.compress_content)
 
@@ -4635,6 +4837,7 @@ class ChatService {
         }),
         localId,
         serverId,
+        serverIdRaw,
         localType,
         createTime,
         sortSeq,

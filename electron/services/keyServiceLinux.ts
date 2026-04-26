@@ -167,7 +167,7 @@ export class KeyServiceLinux {
 
       await new Promise(r => setTimeout(r, 2000))
 
-      return await this.getDbKey(pid, onStatus)
+      return await this.getDbKey(pid, onStatus, timeoutMs)
     } catch (err: any) {
       console.error('[Debug] 自动获取流程彻底崩溃:', err);
       const errMsg = '自动获取微信 PID 失败: ' + err.message
@@ -176,7 +176,7 @@ export class KeyServiceLinux {
     }
   }
 
-  public async getDbKey(pid: number, onStatus?: (message: string, level: number) => void): Promise<DbKeyResult> {
+  public async getDbKey(pid: number, onStatus?: (message: string, level: number) => void, timeoutMs = 180_000): Promise<DbKeyResult> {
     try {
       const helperPath = this.getHelperPath()
 
@@ -193,29 +193,63 @@ export class KeyServiceLinux {
       const targetAddr = scanRes.target_addr
       onStatus?.('基址扫描成功，正在请求管理员权限进行内存 Hook...', 0)
 
-      return await new Promise((resolve) => {
-        const options = { name: 'WeFlow' }
-        const command = `"${helperPath}" db_hook ${pid} ${targetAddr}`
+      if (!this.sudo || typeof this.sudo.exec !== 'function') {
+        const err = 'Linux 授权组件 @vscode/sudo-prompt 未加载，请确认依赖已安装并重新启动 WeFlow'
+        onStatus?.(err, 2)
+        return { success: false, error: err }
+      }
 
-        this.sudo.exec(command, options, (error, stdout) => {
+      return await new Promise((resolve) => {
+        const options = {
+          name: 'WeFlow',
+          env: {
+            PATH: `${process.env.PATH || ''}:/bin:/usr/bin:/sbin:/usr/sbin:/usr/local/bin`
+          }
+        }
+        const timeoutSec = Math.ceil((timeoutMs + 15_000) / 1000)
+        const command = `timeout -k 5s ${timeoutSec}s "${helperPath}" db_hook ${pid} ${targetAddr} ${timeoutMs}`
+        let settled = false
+        const finish = (result: DbKeyResult) => {
+          if (settled) return
+          settled = true
+          clearTimeout(watchdog)
+          resolve(result)
+        }
+        const watchdog = setTimeout(() => {
+          execAsync(`kill -CONT ${pid}`).catch(() => {})
+          const err = `Hook 等待超时（${Math.round(timeoutMs / 1000)} 秒）。请确认微信登录确认已完成，或重启微信后重试。`
+          onStatus?.(err, 2)
+          finish({ success: false, error: err })
+        }, timeoutMs + 30_000)
+
+        onStatus?.('授权通过后请在手机上确认登录微信，正在等待密钥回调...', 0)
+
+        this.sudo.exec(command, options, (error, stdout, stderr) => {
           execAsync(`kill -CONT ${pid}`).catch(() => {})
           if (error) {
-            onStatus?.('授权失败或被取消', 2)
-            resolve({ success: false, error: `授权失败或被取消: ${error.message}` })
+            const detail = String(stderr || '').trim()
+            const message = detail ? `${error.message}: ${detail}` : error.message
+            onStatus?.('授权失败或 Hook 执行失败', 2)
+            finish({ success: false, error: `授权失败或 Hook 执行失败: ${message}` })
             return
           }
           try {
-            const hookRes = JSON.parse((stdout as string).trim())
+            const output = String(stdout || '').trim()
+            if (!output) {
+              const detail = String(stderr || '').trim()
+              throw new Error(detail ? `Hook 无输出: ${detail}` : 'Hook 无输出')
+            }
+            const hookRes = JSON.parse(output)
             if (hookRes.success) {
               onStatus?.('密钥获取成功', 1)
-              resolve({ success: true, key: hookRes.key })
+              finish({ success: true, key: hookRes.key })
             } else {
               onStatus?.(hookRes.result, 2)
-              resolve({ success: false, error: hookRes.result })
+              finish({ success: false, error: hookRes.result })
             }
-          } catch (e) {
+          } catch (e: any) {
             onStatus?.('解析 Hook 结果失败', 2)
-            resolve({ success: false, error: '解析 Hook 结果失败' })
+            finish({ success: false, error: e?.message || '解析 Hook 结果失败' })
           }
         })
       })

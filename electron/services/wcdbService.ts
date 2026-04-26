@@ -92,6 +92,9 @@ export class WcdbService {
         this.setPaths(this.resourcesPath, this.userDataPath)
       }
       this.setLogEnabled(this.logEnabled)
+      if (this.monitorListener) {
+        this.callWorker<{ success?: boolean }>('setMonitor').catch(() => { })
+      }
 
     } catch (e) {
       // Failed to create worker
@@ -364,6 +367,26 @@ export class WcdbService {
 
   async getMessageTableColumns(dbPath: string, tableName: string): Promise<{ success: boolean; columns?: string[]; error?: string }> {
     return this.callWorker('getMessageTableColumns', { dbPath, tableName })
+  }
+
+  async listTables(kind: string, dbPath: string = ''): Promise<{ success: boolean; tables?: string[]; error?: string }> {
+    return this.callWorker('listTables', { kind, dbPath })
+  }
+
+  async getTableSchema(kind: string, dbPath: string, tableName: string): Promise<{ success: boolean; schema?: string; error?: string }> {
+    return this.callWorker('getTableSchema', { kind, dbPath, tableName })
+  }
+
+  async exportTableSnapshot(kind: string, dbPath: string, tableName: string, outputPath: string): Promise<{ success: boolean; rows?: number; columns?: number; error?: string }> {
+    return this.callWorker('exportTableSnapshot', { kind, dbPath, tableName, outputPath })
+  }
+
+  async importTableSnapshot(kind: string, dbPath: string, tableName: string, inputPath: string): Promise<{ success: boolean; rows?: number; inserted?: number; ignored?: number; malformed?: number; columns?: number; error?: string }> {
+    return this.callWorker('importTableSnapshot', { kind, dbPath, tableName, inputPath })
+  }
+
+  async importTableSnapshotWithSchema(kind: string, dbPath: string, tableName: string, inputPath: string, createTableSql: string): Promise<{ success: boolean; rows?: number; inserted?: number; ignored?: number; malformed?: number; columns?: number; error?: string }> {
+    return this.callWorker('importTableSnapshotWithSchema', { kind, dbPath, tableName, inputPath, createTableSql })
   }
 
   async getMessageTableTimeRange(dbPath: string, tableName: string): Promise<{ success: boolean; data?: any; error?: string }> {

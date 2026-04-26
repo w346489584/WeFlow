@@ -194,7 +194,7 @@ curl "http://127.0.0.1:5031/api/v1/messages?talker=xxx@chatroom&media=1&image=1&
   "messages": [
     {
       "localId": 123,
-      "serverId": "456",
+      "serverId": "6116895530414915131",
       "localType": 1,
       "createTime": 1738713600,
       "isSend": 0,
