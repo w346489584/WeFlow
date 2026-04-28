@@ -916,16 +916,18 @@
 }
 
 .insight-collapsible-setting {
-  display: grid;
-  grid-template-rows: 0fr;
+  max-height: 0;
   opacity: 0;
-  transform: translateY(-4px);
-  transition: grid-template-rows 0.22s ease, opacity 0.18s ease, transform 0.2s ease;
+  overflow: hidden;
+  transform: translate3d(0, -4px, 0);
+  contain: layout paint;
+  will-change: max-height, opacity, transform;
+  transition: max-height 0.2s ease, opacity 0.18s ease, transform 0.2s ease;
 
   &.expanded {
-    grid-template-rows: 1fr;
+    max-height: 128px;
     opacity: 1;
-    transform: translateY(0);
+    transform: translate3d(0, 0, 0);
   }
 
   &.collapsed {
@@ -934,8 +936,8 @@
 }
 
 .insight-collapsible-setting-inner {
-  min-height: 0;
-  overflow: hidden;
+  padding-top: 2px;
+  backface-visibility: hidden;
 }
 
 /* Premium Switch Style */

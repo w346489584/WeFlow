@@ -10,7 +10,7 @@
  * 设计原则：
  * - 不引入任何额外 npm 依赖，使用 Node 原生 https 模块调用 OpenAI 兼容 API
  * - 所有失败静默处理，不影响主流程
- * - 当日触发记录（sessionId + 时间列表）随 prompt 一起发送，让模型自行判断是否克制
+ * - 触发频率、冷却与名单过滤均在本地完成，不把调度统计塞进模型 prompt
  */
 
 import https from 'https'
@@ -449,7 +449,7 @@ class InsightService {
 
     try {
       const endpoint = buildApiUrl(apiBaseUrl, '/chat/completions')
-      const requestMessages = [{ role: 'user', content: appendPromptCurrentTime('请回复"连接成功"四个字。') }]
+      const requestMessages = [{ role: 'user', content: '请回复"连接成功"四个字。' }]
       insightDebugSection(
         'INFO',
         'AI 测试连接请求',
@@ -827,26 +827,13 @@ ${topMentionText}
   }
 
   /**
-   * 记录触发并返回该会话今日所有触发时间（用于组装 prompt）。
+   * 记录成功推送的见解，用于设置页展示今日触发统计。
    */
-  private recordTrigger(sessionId: string): string[] {
+  private recordTrigger(sessionId: string): void {
     this.resetIfNewDay()
     const existing = this.todayTriggers.get(sessionId) ?? { timestamps: [] }
     existing.timestamps.push(Date.now())
     this.todayTriggers.set(sessionId, existing)
-    return existing.timestamps.map(formatTimestamp)
-  }
-
-  /**
-   * 获取今日全局已触发次数（所有会话合计），用于 prompt 中告知模型全局上下文。
-   */
-  private getTodayTotalTriggerCount(): number {
-    this.resetIfNewDay()
-    let total = 0
-    for (const record of this.todayTriggers.values()) {
-      total += record.timestamps.length
-    }
-    return total
   }
 
   private formatWeiboTimestamp(raw: string): string {
@@ -905,7 +892,7 @@ ${topMentionText}
 
       if (lines.length === 0) return ''
       insightLog('INFO', `已加载 ${lines.length} 条朋友圈内容 (sessionId=${sessionId})`)
-      return `以下是该联系人的朋友圈内容（仅人类可读原文，最近 ${lines.length} 条）：\n${lines.join('\n')}`
+      return `近期朋友圈内容（最近 ${lines.length} 条）：\n${lines.join('\n')}`
     } catch (error) {
       insightLog('WARN', `拉取朋友圈内容失败 (sessionId=${sessionId}): ${(error as Error).message}`)
       return ''
@@ -917,7 +904,6 @@ ${topMentionText}
     if (!allowSocialContext) return ''
 
     const rawCookie = String(this.config.get('aiInsightWeiboCookie') || '').trim()
-    const hasCookie = rawCookie.length > 0
 
     const bindings =
       (this.config.get('aiInsightWeiboBindings') as Record<string, { uid?: string; screenName?: string }> | undefined) || {}
@@ -938,10 +924,7 @@ ${topMentionText}
         return `[微博 ${time}] ${text}`
       })
       insightLog('INFO', `已加载 ${lines.length} 条微博公开内容 (uid=${uid})`)
-      const riskHint = hasCookie
-        ? ''
-        : '\n提示：未配置微博 Cookie，使用移动端公开接口抓取，可能因平台风控导致获取失败或内容较少。'
-      return `近期公开社交平台内容（来源：微博，最近 ${lines.length} 条）：\n${lines.join('\n')}${riskHint}`
+      return `近期公开社交平台内容（来源：微博，最近 ${lines.length} 条）：\n${lines.join('\n')}`
     } catch (error) {
       insightLog('WARN', `拉取微博公开内容失败 (uid=${uid}): ${(error as Error).message}`)
       return ''
@@ -1177,10 +1160,6 @@ ${topMentionText}
 
     // ── 构建 prompt ────────────────────────────────────────────────────────────
 
-    // 今日触发统计（让模型具备时间与克制感）
-    const sessionTriggerTimes = this.recordTrigger(sessionId)
-    const totalTodayTriggers = this.getTodayTotalTriggerCount()
-
     let contextSection = ''
     if (allowContext) {
       try {
@@ -1211,24 +1190,10 @@ ${topMentionText}
     const customPrompt = (this.config.get('aiInsightSystemPrompt') as string) || ''
     const systemPrompt = customPrompt.trim() || DEFAULT_SYSTEM_PROMPT
 
-    // 可变的上下文统计信息放在 user message 里，保持 system prompt 稳定不变
-    // 这样 provider 端（Anthropic/OpenAI）能最大化命中 prompt cache，降低费用
-    const triggerDesc =
-      triggerReason === 'silence'
-        ? `你已经 ${silentDays} 天没有和「${resolvedDisplayName}」聊天了。`
-        : `你最近和「${resolvedDisplayName}」有新的聊天动态。`
-
-    const todayStatsDesc =
-      sessionTriggerTimes.length > 1
-        ? `今天你已经针对「${resolvedDisplayName}」收到过 ${sessionTriggerTimes.length - 1} 条见解（时间：${sessionTriggerTimes.slice(0, -1).join('、')}），请适当克制。`
-        : `今天你还没有针对「${resolvedDisplayName}」发出过见解。`
-
-    const globalStatsDesc = `今天全部联系人合计已触发 ${totalTodayTriggers} 条见解。`
-
     const userPromptBase = [
-      `触发原因：${triggerDesc}`,
-      `时间统计：${todayStatsDesc}`,
-      `全局统计：${globalStatsDesc}`,
+      triggerReason === 'silence' && silentDays
+        ? `已 ${silentDays} 天未联系「${resolvedDisplayName}」。`
+        : '',
       contextSection,
       momentsContextSection,
       socialContextSection,
@@ -1250,7 +1215,7 @@ ${topMentionText}
         `接口地址：${endpoint}`,
         `模型：${model}`,
         `Max Tokens：${maxTokens}`,
-        `触发原因：${triggerReason}`,
+        `触发类型：${triggerReason}`,
         `上下文开关：${allowContext ? '开启' : '关闭'}`,
         `上下文条数：${contextCount}`,
         '',
@@ -1314,6 +1279,7 @@ ${topMentionText}
       }
 
       insightLog('INFO', `已为 ${resolvedDisplayName} 推送见解`)
+      this.recordTrigger(sessionId)
     } catch (e) {
       insightDebugSection(
         'ERROR',
