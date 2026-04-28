@@ -3322,27 +3322,30 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
         </div>
       </div>
 
-      {aiInsightAllowContext && (
-        <div className="form-group">
-          <label>发送近期对话条数</label>
-          <span className="form-hint">
-            发送给 AI 的聊天记录最大条数。条数越多分析越准确，token 消耗也越多。
-          </span>
-          <input
-            type="number"
-            className="field-input"
-            value={aiInsightContextCount}
-            min={1}
-            max={200}
-            onChange={(e) => {
-              const val = Math.max(1, Math.min(200, parseInt(e.target.value, 10) || 40))
-              setAiInsightContextCount(val)
-              scheduleConfigSave('aiInsightContextCount', () => configService.setAiInsightContextCount(val))
-            }}
-            style={{ width: 100 }}
-          />
+      <div className={`insight-collapsible-setting ${aiInsightAllowContext ? 'expanded' : 'collapsed'}`} aria-hidden={!aiInsightAllowContext}>
+        <div className="insight-collapsible-setting-inner">
+          <div className="form-group">
+            <label>发送近期对话条数</label>
+            <span className="form-hint">
+              发送给 AI 的聊天记录最大条数。条数越多分析越准确，token 消耗也越多。
+            </span>
+            <input
+              type="number"
+              className="field-input"
+              value={aiInsightContextCount}
+              min={1}
+              max={200}
+              disabled={!aiInsightAllowContext}
+              onChange={(e) => {
+                const val = Math.max(1, Math.min(200, parseInt(e.target.value, 10) || 40))
+                setAiInsightContextCount(val)
+                scheduleConfigSave('aiInsightContextCount', () => configService.setAiInsightContextCount(val))
+              }}
+              style={{ width: 100 }}
+            />
+          </div>
         </div>
-      )}
+      </div>
 
       <div className="divider" />
 
@@ -3369,27 +3372,30 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
         </div>
       </div>
 
-      {aiInsightAllowMomentsContext && (
-        <div className="form-group">
-          <label>发送近期朋友圈条数</label>
-          <span className="form-hint">
-            仅提取人类可读文本原文，不会拼接朋友圈原始 XML 字段。
-          </span>
-          <input
-            type="number"
-            className="field-input"
-            value={aiInsightMomentsContextCount}
-            min={1}
-            max={20}
-            onChange={(e) => {
-              const val = Math.max(1, Math.min(20, parseInt(e.target.value, 10) || 5))
-              setAiInsightMomentsContextCount(val)
-              scheduleConfigSave('aiInsightMomentsContextCount', () => configService.setAiInsightMomentsContextCount(val))
-            }}
-            style={{ width: 100 }}
-          />
+      <div className={`insight-collapsible-setting ${aiInsightAllowMomentsContext ? 'expanded' : 'collapsed'}`} aria-hidden={!aiInsightAllowMomentsContext}>
+        <div className="insight-collapsible-setting-inner">
+          <div className="form-group">
+            <label>发送近期朋友圈条数</label>
+            <span className="form-hint">
+              仅提取人类可读文本原文，不会拼接朋友圈原始 XML 字段。
+            </span>
+            <input
+              type="number"
+              className="field-input"
+              value={aiInsightMomentsContextCount}
+              min={1}
+              max={20}
+              disabled={!aiInsightAllowMomentsContext}
+              onChange={(e) => {
+                const val = Math.max(1, Math.min(20, parseInt(e.target.value, 10) || 5))
+                setAiInsightMomentsContextCount(val)
+                scheduleConfigSave('aiInsightMomentsContextCount', () => configService.setAiInsightMomentsContextCount(val))
+              }}
+              style={{ width: 100 }}
+            />
+          </div>
         </div>
-      )}
+      </div>
 
       <div className="divider" />
 
@@ -3428,29 +3434,32 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
         )}
       </div>
 
-      {aiInsightAllowSocialContext && (
-        <div className="form-group">
-          <label>发送近期社交平台内容条数</label>
-          <span className="form-hint">
-            当前仅支持微博最近发帖。
-            <br />
-            <strong>不建议超过 5，避免触发平台风控。</strong>
-          </span>
-          <input
-            type="number"
-            className="field-input"
-            value={aiInsightSocialContextCount}
-            min={1}
-            max={5}
-            onChange={(e) => {
-              const val = Math.max(1, Math.min(5, parseInt(e.target.value, 10) || 3))
-              setAiInsightSocialContextCount(val)
-              scheduleConfigSave('aiInsightSocialContextCount', () => configService.setAiInsightSocialContextCount(val))
-            }}
-            style={{ width: 100 }}
-          />
+      <div className={`insight-collapsible-setting ${aiInsightAllowSocialContext ? 'expanded' : 'collapsed'}`} aria-hidden={!aiInsightAllowSocialContext}>
+        <div className="insight-collapsible-setting-inner">
+          <div className="form-group">
+            <label>发送近期社交平台内容条数</label>
+            <span className="form-hint">
+              当前仅支持微博最近发帖。
+              <br />
+              <strong>不建议超过 5，避免触发平台风控。</strong>
+            </span>
+            <input
+              type="number"
+              className="field-input"
+              value={aiInsightSocialContextCount}
+              min={1}
+              max={5}
+              disabled={!aiInsightAllowSocialContext}
+              onChange={(e) => {
+                const val = Math.max(1, Math.min(5, parseInt(e.target.value, 10) || 3))
+                setAiInsightSocialContextCount(val)
+                scheduleConfigSave('aiInsightSocialContextCount', () => configService.setAiInsightSocialContextCount(val))
+              }}
+              style={{ width: 100 }}
+            />
+          </div>
         </div>
-      )}
+      </div>
 
       <div className="divider" />
       {/* 自定义 System Prompt */}
@@ -3728,7 +3737,7 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
                     <span>对话（{filteredSessions.length}）</span>
                     <span className="insight-moments-column-title">朋友圈</span>
                     <span className="insight-social-column-title">社交平台（微博）</span>
-                    <span>状态</span>
+                    <span className="anti-revoke-status-column-title">状态</span>
                   </div>
                   {filteredSessions.map((session) => {
                     const isSelected = aiInsightFilterList.has(session.username)
